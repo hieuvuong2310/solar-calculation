@@ -42,7 +42,7 @@ Once the server is running, visit:
 The backend can be run using Docker:
 
 ```bash
-docker-compose up backend
+docker-compose up back-end
 ```
 
 Or build and run separately:
