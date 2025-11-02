@@ -2,7 +2,7 @@ from agent_kit import Agent
 import prompts.solar_report_manager_prompts as prompts # Use manager's own prompt file
 import google.generativeai as genai
 from config import GOOGLE_API_KEY
-from models.schemas import SolarReportData
+from models.schema import SolarReportData
 
 # Import sub-agents directly from their granular paths
 from agents.subagents.solar_data.agent import SolarDataAgent
