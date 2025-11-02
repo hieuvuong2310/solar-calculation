@@ -1,0 +1,32 @@
+networks:
+  solar-calculation-network:
+    driver: bridge
+
+services:
+  front-end:
+    build:
+      context: ./front-end
+      dockerfile: Dockerfile
+    ports:
+      - 3000:3000
+    volumes:
+      - ./front-end:/front-end
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - back-end
+    networks:
+      - solar-calculation-network
+
+  back-end:
+    build:
+      context: ./back-end
+      dockerfile: Dockerfile
+    ports:
+      - 3001:3001
+    volumes:
+      - ./back-end:/back-end
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - solar-calculation-network
