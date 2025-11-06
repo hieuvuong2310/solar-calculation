@@ -4,14 +4,15 @@ WORKDIR /front-end
 
 # Copy package files
 COPY package.json package-lock.json* ./
+COPY scripts ./scripts
 
 # Install dependencies
-RUN npm ci
+RUN npm i
 
 # Copy dependencies from deps stage
 COPY . .
 
 
 # Build the application
-RUN npm run dev
+CMD [ "npm", "run", "dev" ]
 

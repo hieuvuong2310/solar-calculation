@@ -3,8 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "node scripts/copy-cesium-assets.js",
-    "dev": "next dev",
+    "dev": "node scripts/copy-cesium-assets.js && next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
