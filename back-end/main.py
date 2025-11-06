@@ -1,86 +1,58 @@
+import json
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
+from google.adk.sessions import InMemorySessionService
+from google.adk.runners import Runner
+from google.genai import types
+from dotenv import load_dotenv
 
+from agents.agent import root_agent
+
+load_dotenv() 
 app = FastAPI(title="Solar Calculation API", version="1.0.0")
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Frontend URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+session_service = InMemorySessionService()
 
 
-# Request/Response Models
-class CalculationRequest(BaseModel):
-    """Solar calculation request model"""
-    latitude: float
-    longitude: float
-    panel_area: Optional[float] = None
-    panel_efficiency: Optional[float] = None
-
-
-class CalculationResponse(BaseModel):
-    """Solar calculation response model"""
-    result: dict
-    message: str
-
-
-# Health check endpoint
 @app.get("/")
 async def root():
-    """Root endpoint - health check"""
-    return {"message": "Solar Calculation API is running", "status": "healthy"}
-
-
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "solar-calculation-backend"}
-
-
-# Solar calculation endpoint
-@app.post("/api/calculate", response_model=CalculationResponse)
-async def calculate_solar(data: CalculationRequest):
-    """
-    Calculate solar energy based on location and panel specifications
+    APP_NAME = "agents"
+    USER_ID = "user"
+    SESSION_ID = "session"
     
-    Args:
-        data: CalculationRequest with location and optional panel specs
-        
-    Returns:
-        CalculationResponse with calculation results
-    """
-    # Placeholder calculation logic
-    # This can be expanded with actual solar calculation formulas
-    
-    result = {
-        "latitude": data.latitude,
-        "longitude": data.longitude,
-        "panel_area": data.panel_area or 20.0,  # Default 20 m²
-        "panel_efficiency": data.panel_efficiency or 0.20,  # Default 20%
-    }
-    
-    # Simple placeholder calculation
-    if data.panel_area and data.panel_efficiency:
-        estimated_power = data.panel_area * data.panel_efficiency * 1000  # kW
-        result["estimated_power_kw"] = round(estimated_power, 2)
-    
-    return CalculationResponse(
-        result=result,
-        message="Calculation completed successfully"
+    # Create a session
+    await session_service.create_session(
+        app_name=APP_NAME,
+        user_id=USER_ID,
+        session_id=SESSION_ID,
     )
 
+    # Initialize Runner with the session, not the service
+    runner = Runner(
+        agent=root_agent,
+        app_name=APP_NAME,
+        session_service=session_service,
+    )
 
-@app.get("/api/locations/{location_id}")
-async def get_location(location_id: int):
-    """Get location-specific solar data"""
-    return {
-        "location_id": location_id,
-        "message": "Location data endpoint - to be implemented"
+    # Input for the agent
+    input_data = {
+        "latitude": 10.809107,
+        "longitude": 106.705638,
+        "address": "122/46/11 bùi đình tý phường 12 quận bình thạnh tp hồ chí minh"
     }
+    content = types.Content(parts=[types.Part(text=json.dumps(input_data))])
 
+    final_response_text = "Agent did not produce a final response."
+
+    # Stream agent responses asynchronously
+    async for event in runner.run_async(
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+        new_message=content
+    ):
+        if event.is_final_response():
+            if getattr(event, "content", None) and event.content.parts:
+                final_response_text = event.content.parts[0].text
+            elif getattr(event, "actions", None) and event.actions.escalate:
+                final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
+            print(f"<<< Final Agent Response: {final_response_text}")
+    return {"message": "API is running", "response": final_response_text}
