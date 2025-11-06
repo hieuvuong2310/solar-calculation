@@ -4,7 +4,7 @@ from google.adk.tools import google_search, google_maps_grounding
 from . import prompt
 
 regional_context_search_agent = Agent(
-        name="regional_context_agent",
+        name="regional_context_search_agent",
         description="Agent to determine regional identifiers from geographic coordinates.",
         model="gemini-2.0-flash",
         tools=[google_search, google_maps_grounding],
