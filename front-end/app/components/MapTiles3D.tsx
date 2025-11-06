@@ -122,15 +122,27 @@ export default function MapTiles3D({
           setError(null);
         })
         .catch((error: unknown) => {
-          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorMessage = error instanceof Error ? error.message : JSON.stringify(error, null, 2);
           console.error('Error loading 3D tiles:', error);
-          setError(`Failed to load 3D tiles: ${errorMessage}`);
+          console.error('Tile loading error details:', {
+            message: error instanceof Error ? error.message : 'Unknown error',
+            stack: error instanceof Error ? error.stack : undefined,
+            error: error
+          });
+          setTimeout(() => {
+            setError(`Failed to load 3D tiles: ${errorMessage}`);
+          }, 0);
         });
 
       viewerRef.current = viewer;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorMessage = err instanceof Error ? err.message : JSON.stringify(err, null, 2);
       console.error('Error initializing Cesium:', err);
+      console.error('Error details:', {
+        message: err instanceof Error ? err.message : 'Unknown error',
+        stack: err instanceof Error ? err.stack : undefined,
+        error: err
+      });
       // Use setTimeout to avoid calling setState synchronously in effect
       setTimeout(() => {
         setError(`Failed to initialize map: ${errorMessage}`);
@@ -169,11 +181,14 @@ export default function MapTiles3D({
           padding: '20px',
         }}
       >
-        <div style={{ textAlign: 'center' }}>
+        <div style={{ textAlign: 'center', maxWidth: '600px' }}>
           <h2 style={{ marginBottom: '10px' }}>Map Loading Error</h2>
-          <p>{error}</p>
+          <p style={{ marginBottom: '10px', wordBreak: 'break-word' }}>{error}</p>
           <p style={{ marginTop: '10px', fontSize: '14px', opacity: 0.8 }}>
-            Check the browser console for more details.
+            Check the browser console (F12) for more details.
+          </p>
+          <p style={{ marginTop: '10px', fontSize: '12px', opacity: 0.6 }}>
+            If Cesium assets are missing, run: <code>npm install</code> or <code>node scripts/copy-cesium-assets.js</code>
           </p>
         </div>
       </div>
