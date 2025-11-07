@@ -7,7 +7,7 @@ COPY package.json package-lock.json* ./
 COPY scripts ./scripts
 
 # Install dependencies
-RUN npm i
+RUN npm ci
 
 # Copy dependencies from deps stage
 COPY . .
