@@ -3,14 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/copy-cesium-assets.js && next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
     "@react-google-maps/api": "^2.20.7",
+    "@types/cesium": "^1.70.4",
     "@types/google.maps": "^3.58.1",
+    "cesium": "^1.135.0",
     "next": "16.0.1",
     "react": "19.2.0",
     "react-dom": "19.2.0"
