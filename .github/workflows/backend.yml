@@ -6,7 +6,7 @@ on:
       - main
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  RUN_REGION: asia-southeast1
+  RUN_REGION: us-west2
   SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }}
   GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
 jobs:
