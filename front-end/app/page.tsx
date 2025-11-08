@@ -29,7 +29,7 @@ export default function Home() {
     <div className="w-full h-screen">
       <MapTiles3D
         apiKey={apiKey}
-        center={{ lat: 37.7749, lng: -122.4194 }} // San Francisco (default)
+        center={{ lat: 37.7793, lng: -122.4193 }} // San Francisco City Hall
         height="100vh"
         width="100%"
       />
