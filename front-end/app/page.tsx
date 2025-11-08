@@ -6,7 +6,6 @@ export default function Home() {
   // Get API key from environment variable
   // Note: This should be Map Tiles API key, not Maps JavaScript API key
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '';
-  const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || '';
 
   if (!apiKey) {
     return (
@@ -30,10 +29,9 @@ export default function Home() {
     <div className="w-full h-screen">
       <MapTiles3D
         apiKey={apiKey}
-        center={{ lat: 37.7749, lng: -122.4194 }} // San Francisco (default)
+        center={{ lat: 37.7793, lng: -122.4193 }} // San Francisco City Hall
         height="100vh"
         width="100%"
-        mapId={mapId}
       />
     </div>
   );

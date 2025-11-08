@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { GoogleMapsOverlay } from '@deck.gl/google-maps';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import DeckGL from '@deck.gl/react';
+import type { Layer, LayersList, MapViewState } from '@deck.gl/core';
 import { Tile3DLayer } from '@deck.gl/geo-layers';
 import { SimpleMeshLayer } from '@deck.gl/mesh-layers';
 import { registerLoaders } from '@loaders.gl/core';
@@ -10,11 +11,8 @@ import { DracoLoader } from '@loaders.gl/draco';
 import { CubeGeometry } from '@luma.gl/engine';
 import { Matrix4 } from '@math.gl/core';
 
-type GoogleMaps = typeof google.maps;
-
 interface MapTiles3DProps {
   apiKey: string;
-  mapId?: string;
   center?: { lat: number; lng: number };
   height?: string;
   width?: string;
@@ -25,6 +23,14 @@ interface PanelInstance {
   transform: number[];
 }
 
+type DeckViewState = {
+  latitude: number;
+  longitude: number;
+  zoom: number;
+  pitch: number;
+  bearing: number;
+};
+
 const defaultCenter = {
   lat: 37.7793,
   lng: -122.4193,
@@ -33,10 +39,18 @@ const defaultCenter = {
 const PANEL_LENGTH = 3.2;
 const PANEL_WIDTH = 1.9;
 const PANEL_THICKNESS = 0.15;
-const PANEL_TILT_DEGREES = 35;
+const PANEL_TILT_DEGREES = 90;
 const PANEL_AZIMUTH_DEGREES = 0;
 const PANEL_HEIGHT_ABOVE_GROUND = 55;
 const EARTH_RADIUS = 6378137;
+
+const INITIAL_VIEW_STATE: DeckViewState = {
+  latitude: defaultCenter.lat,
+  longitude: defaultCenter.lng,
+  zoom: 18.7,
+  pitch: 60,
+  bearing: 0,
+};
 
 let loadersRegistered = false;
 
@@ -47,18 +61,10 @@ if (!loadersRegistered) {
 
 export default function MapTiles3D({
   apiKey,
-  mapId,
   center = defaultCenter,
   height = '100vh',
   width = '100%',
 }: MapTiles3DProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<google.maps.Map | null>(null);
-  const overlayRef = useRef<GoogleMapsOverlay | null>(null);
-  const scriptRef = useRef<HTMLScriptElement | null>(null);
-  const hasPlacedDefaultRef = useRef<boolean>(false);
-
-  const [mapsLoaded, setMapsLoaded] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [numPanels, setNumPanels] = useState<number>(12);
   const [showPanelConfig, setShowPanelConfig] = useState<boolean>(false);
@@ -67,26 +73,12 @@ export default function MapTiles3D({
   const [latInput, setLatInput] = useState<string>('');
   const [lngInput, setLngInput] = useState<string>('');
   const [panels, setPanels] = useState<PanelInstance[]>([]);
-
-  const mapOptions = useMemo<google.maps.MapOptions>(
-    () => ({
-      mapId: mapId && mapId.trim() !== '' ? mapId : undefined,
-      disableDefaultUI: false,
-      clickableIcons: true,
-      gestureHandling: 'greedy',
-      zoomControl: true,
-      mapTypeControl: true,
-      scaleControl: true,
-      streetViewControl: true,
-      rotateControl: true,
-      fullscreenControl: true,
-      tilt: 45,
-      heading: 0,
-      minZoom: 17,
-      maxZoom: 21,
-    }),
-    [mapId]
-  );
+  const [initialized, setInitialized] = useState(false);
+  const [viewState, setViewState] = useState<DeckViewState>(() => ({
+    ...INITIAL_VIEW_STATE,
+    latitude: center.lat ?? INITIAL_VIEW_STATE.latitude,
+    longitude: center.lng ?? INITIAL_VIEW_STATE.longitude,
+  }));
 
   const cubeGeometry = useMemo(() => new CubeGeometry(), []);
   const identityTransform = useMemo(() => new Matrix4().identity().toArray(), []);
@@ -138,94 +130,10 @@ export default function MapTiles3D({
     [apiKey]
   );
 
-  const updateOverlayLayers = useCallback(() => {
-    if (!overlayRef.current) {
-      return;
-    }
-    overlayRef.current.setProps({ layers: [tilesLayer, panelLayer] });
-  }, [panelLayer, tilesLayer]);
-
-  const loadGoogleMapsScript = useCallback(() => {
-    if (typeof window === 'undefined' || mapsLoaded) {
-      return;
-    }
-
-    const existing = document.querySelector<HTMLScriptElement>('script[data-google-maps-api]');
-    if (existing) {
-      scriptRef.current = existing;
-      setMapsLoaded(true);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry`;
-    script.async = true;
-    script.defer = true;
-    script.dataset.googleMapsApi = 'true';
-    script.onload = () => setMapsLoaded(true);
-    script.onerror = () => setError('Failed to load Google Maps JavaScript API');
-    document.head.appendChild(script);
-    scriptRef.current = script;
-  }, [apiKey, mapsLoaded]);
-
-  const initializeMap = useCallback(
-    (maps: GoogleMaps) => {
-      if (!containerRef.current || mapRef.current) {
-        return;
-      }
-
-      const map = new maps.Map(containerRef.current, {
-        ...mapOptions,
-        center,
-        zoom: 19,
-      });
-
-      map.setTilt(45);
-      map.setHeading(0);
-
-      const overlay = new GoogleMapsOverlay({
-        layers: [tilesLayer, panelLayer],
-      });
-
-      overlay.setMap(map);
-
-      mapRef.current = map;
-      overlayRef.current = overlay;
-    },
-    [center, mapOptions, panelLayer, tilesLayer]
+  const deckLayers = useMemo<LayersList>(
+    () => [tilesLayer as unknown as Layer, panelLayer as unknown as Layer],
+    [panelLayer, tilesLayer]
   );
-
-  useEffect(() => {
-    if (mapsLoaded) {
-      return;
-    }
-
-    const rafId = requestAnimationFrame(() => {
-      loadGoogleMapsScript();
-    });
-
-    return () => cancelAnimationFrame(rafId);
-  }, [loadGoogleMapsScript, mapsLoaded]);
-
-  useEffect(() => {
-    if (!mapsLoaded) {
-      return;
-    }
-
-    if (!window.google || !window.google.maps) {
-      const timeoutId = window.setTimeout(() => {
-        setError('Google Maps API not available');
-      }, 0);
-
-      return () => window.clearTimeout(timeoutId);
-    }
-
-    initializeMap(window.google.maps);
-  }, [initializeMap, mapsLoaded]);
-
-  useEffect(() => {
-    updateOverlayLayers();
-  }, [updateOverlayLayers]);
 
   const createPanelInstances = useCallback(
     (lat: number, lng: number): PanelInstance[] => {
@@ -244,7 +152,7 @@ export default function MapTiles3D({
 
       const modelMatrix = new Matrix4()
         .identity()
-        .scale([PANEL_LENGTH, PANEL_THICKNESS, PANEL_WIDTH])
+        .scale([PANEL_LENGTH, PANEL_WIDTH, PANEL_THICKNESS])
         .rotateZ(Math.PI - azimuthRad)
         .rotateX(-pitchRad);
 
@@ -275,61 +183,55 @@ export default function MapTiles3D({
   );
 
   const placePanelsAt = useCallback(
-    (lat: number, lng: number, opts?: { zoom?: number; recenter?: boolean }) => {
-      const map = mapRef.current;
-      if (!map) {
-        console.warn('Map not ready for placing panels');
-        return;
-      }
-
+    (lat: number, lng: number, opts?: { zoom?: number; recenter?: boolean; pitch?: number; bearing?: number }) => {
       const newPanels = createPanelInstances(lat, lng);
       setPanels(newPanels);
 
       if (opts?.recenter !== false) {
-        map.panTo({ lat, lng });
+        setViewState((prev) => ({
+          ...prev,
+          latitude: lat,
+          longitude: lng,
+          zoom: opts?.zoom ?? prev.zoom ?? INITIAL_VIEW_STATE.zoom,
+          pitch: opts?.pitch ?? prev.pitch ?? INITIAL_VIEW_STATE.pitch,
+          bearing: opts?.bearing ?? prev.bearing ?? INITIAL_VIEW_STATE.bearing,
+        }));
       }
-
-      if (opts?.zoom) {
-        map.setZoom(opts.zoom);
-      }
-
-      map.setTilt(45);
-      map.setHeading(0);
     },
     [createPanelInstances]
   );
 
   const handlePlacePanels = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) {
-      return;
-    }
-    const mapCenter = map.getCenter();
-    if (!mapCenter) {
-      return;
-    }
-    placePanelsAt(mapCenter.lat(), mapCenter.lng(), { recenter: false });
-  }, [placePanelsAt]);
+    placePanelsAt(viewState.latitude, viewState.longitude, { recenter: false });
+  }, [placePanelsAt, viewState.latitude, viewState.longitude]);
 
-  const handleSearchAddress = useCallback(() => {
-    if (!searchAddress.trim() || !window.google?.maps) {
+  const handleSearchAddress = useCallback(async () => {
+    if (!searchAddress.trim()) {
       return;
     }
 
-    const geocoder = new google.maps.Geocoder();
     setIsSearching(true);
 
-    geocoder.geocode({ address: searchAddress }, (results, status) => {
-      setIsSearching(false);
+    try {
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(searchAddress)}&key=${apiKey}`
+      );
+      const data = await response.json();
 
-      if (status === 'OK' && results && results[0]) {
-        const location = results[0].geometry.location;
-        placePanelsAt(location.lat(), location.lng(), { zoom: 20, recenter: true });
+      if (data.status === 'OK' && data.results && data.results[0]) {
+        const location = data.results[0].geometry.location;
+        placePanelsAt(location.lat, location.lng, { zoom: 19.5, recenter: true });
       } else {
-        alert(`Geocoding failed: ${status}`);
+        console.warn('Geocoding failed:', data);
+        alert(`Geocoding failed: ${data.status || 'Unknown error'}`);
       }
-    });
-  }, [placePanelsAt, searchAddress]);
+    } catch (err) {
+      console.error('Geocoding request failed:', err);
+      alert('Failed to search address. Check console for details.');
+    } finally {
+      setIsSearching(false);
+    }
+  }, [apiKey, placePanelsAt, searchAddress]);
 
   const handleSearchLatLng = useCallback(() => {
     const lat = parseFloat(latInput);
@@ -353,27 +255,22 @@ export default function MapTiles3D({
   }, []);
 
   useEffect(() => {
-    if (mapRef.current && !hasPlacedDefaultRef.current) {
-      hasPlacedDefaultRef.current = true;
-      const rafId = requestAnimationFrame(() => {
-        placePanelsAt(center.lat, center.lng, { zoom: 19, recenter: true });
+    if (initialized) {
+      return;
+    }
+
+    const rafId = requestAnimationFrame(() => {
+      placePanelsAt(center.lat, center.lng, {
+        zoom: INITIAL_VIEW_STATE.zoom,
+        recenter: true,
+        pitch: INITIAL_VIEW_STATE.pitch,
+        bearing: INITIAL_VIEW_STATE.bearing,
       });
+      setInitialized(true);
+    });
 
-      return () => cancelAnimationFrame(rafId);
-    }
-
-    return undefined;
-  }, [center.lat, center.lng, placePanelsAt]);
-
-  useEffect(() => () => {
-    overlayRef.current?.setMap(null);
-    overlayRef.current = null;
-    mapRef.current = null;
-    if (scriptRef.current && scriptRef.current.dataset.googleMapsApi) {
-      scriptRef.current.remove();
-      scriptRef.current = null;
-    }
-  }, []);
+    return () => cancelAnimationFrame(rafId);
+  }, [center.lat, center.lng, initialized, placePanelsAt]);
 
   if (error) {
     return (
@@ -408,30 +305,28 @@ export default function MapTiles3D({
         overflow: 'hidden',
       }}
     >
-      {!mapsLoaded && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: 'rgba(17, 24, 39, 0.85)',
-            color: '#fff',
-            zIndex: 10,
-            fontSize: '16px',
-            letterSpacing: '0.05em',
-          }}
-        >
-          Loading Google Maps…
-        </div>
-      )}
-
-      <div
-        ref={containerRef}
+      <DeckGL
+        initialViewState={INITIAL_VIEW_STATE}
+        controller={{
+          dragRotate: true,
+          touchRotate: true,
+          keyboard: true,
+        }}
+        viewState={viewState}
+        onViewStateChange={({ viewState: next }) => {
+          const nextViewState = next as MapViewState;
+          setViewState((prev) => ({
+            latitude: nextViewState.latitude ?? prev.latitude,
+            longitude: nextViewState.longitude ?? prev.longitude,
+            zoom: nextViewState.zoom ?? prev.zoom,
+            pitch: nextViewState.pitch ?? prev.pitch,
+            bearing: nextViewState.bearing ?? prev.bearing,
+          }));
+        }}
+        layers={deckLayers}
         style={{
           position: 'absolute',
-          inset: 0,
+          inset: '0',
         }}
       />
 
@@ -673,8 +568,8 @@ export default function MapTiles3D({
             <strong>Tips:</strong>
             <ul style={{ margin: '8px 0 0 16px', padding: 0 }}>
               <li>Search an address or enter precise coordinates</li>
-              <li>Map auto-tilts to 45° for 3D building visualization</li>
-              <li>Panels render with Deck.gl SimpleMeshLayer on Google Maps</li>
+              <li>Use the mouse or trackpad to tilt, rotate, and zoom the 3D tiles</li>
+              <li>Panels render with Deck.gl SimpleMeshLayer over Google Photorealistic 3D Tiles</li>
             </ul>
           </div>
         </div>
