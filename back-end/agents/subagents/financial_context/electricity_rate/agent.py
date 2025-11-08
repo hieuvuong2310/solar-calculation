@@ -2,6 +2,7 @@ import json
 from google.adk.agents import LlmAgent, Agent
 from google.adk.tools import google_search
 
+from models.schemas import USDConvertedElectricityRatePlan
 from . import prompt
 
 electricity_rate_agent = LlmAgent(
@@ -63,3 +64,11 @@ usd_converted_electricity_rates_agent = Agent(
     output_key="usd_electricity_rates",
 )
 
+usd_electricity_rates_setter = Agent(
+    name="usd_electricity_rates_setter",
+    description="Agent to set the final USD converted electricity rates.",
+    model="gemini-2.0-flash",
+    instruction="Extract and return only the JSON object representing the USD converted electricity rates from {usd_electricity_rates}.",
+    output_key="usd_electricity_rates",
+    output_schema=USDConvertedElectricityRatePlan,
+)
