@@ -5,9 +5,9 @@ on:
     branches:
       - main
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  PROJECT_ID: ${{ secrets.PROJECT_ID }}
   RUN_REGION: us-west2
-  SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }}
+  SA_KEY_JSON: ${{ secrets.SA_KEY_JSON }}
   GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
 jobs:
   deploy:
