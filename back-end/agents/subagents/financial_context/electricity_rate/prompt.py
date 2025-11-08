@@ -54,7 +54,7 @@ OUTPUT: Return only the JSON object as specified.
 """
 
 CONVERSION_RATE_SEARCH_PROMPT = """
-Using the currency code: {currency_code}, find the current conversion rate to USD. Return ONLY the numeric conversion rate.
+Return the numerical value of the currency conversion rate FROM {currency_code} TO USD
 """
 
 CURRENCY_CONVERSION_PROMPT = """

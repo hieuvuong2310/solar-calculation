@@ -1,6 +1,6 @@
 import requests
 from config import GOOGLE_API_KEY
-from models.schema import SolarPotential
+from models.schemas import SolarPotential
 
 class SolarAPIClient:
     def __init__(self):
