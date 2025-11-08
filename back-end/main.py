@@ -1,9 +1,11 @@
 import json
+import os
 from fastapi import FastAPI
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.genai import types
 from dotenv import load_dotenv
+import uvicorn
 
 from agents.agent import root_agent
 
@@ -11,7 +13,6 @@ load_dotenv()
 app = FastAPI(title="Solar Calculation API", version="1.0.0")
 
 session_service = InMemorySessionService()
-
 
 @app.get("/")
 async def root():
@@ -56,3 +57,6 @@ async def root():
                 final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
             print(f"<<< Final Agent Response: {final_response_text}")
     return {"message": "API is running", "response": final_response_text}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 3001)))
