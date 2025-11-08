@@ -39,7 +39,7 @@ class DemandCharge(BaseModel):
 class AdditionalFee(BaseModel):
     name: str
     amount_usd: float
-    unit: Literal["kWh"]
+    unit: Literal["kWh", "month"]
     
 class USDConvertedElectricityRatePlan(BaseModel):
     plan_type: Literal["flat", "tiered", "tou", "demand", "hybrid"]
