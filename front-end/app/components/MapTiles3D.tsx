@@ -143,7 +143,7 @@ function createPanelInstancesFromBuilding(data: BuildingInsights | undefined): P
       const pitchDeg = segment?.pitchDegrees ?? 0;
       const azimuthDeg = segment?.azimuthDegrees ?? 0;
       const baseHeight = segment?.planeHeightAtCenterMeters ?? 0;
-      const height = baseHeight - 0.3;
+      const height = baseHeight - 17;
 
       const [length, width] = orientationDimensions(panel.orientation, panelHeight, panelWidth);
 
