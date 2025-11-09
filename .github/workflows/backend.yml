@@ -26,7 +26,8 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       - name: Build Backend Image
-        run: gcloud builds submit back-end --file back-end/Dockerfile --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA
+        run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA
+        working-directory: back-end
 
       - name: Deploy Backend
         run: |
