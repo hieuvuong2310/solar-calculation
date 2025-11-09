@@ -26,7 +26,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       - name: Copy Dockerfile
-        run: cp back-end/Dockerfile Dockerfile
+        run: cp back-end/Dockerfile back-end/Dockerfile
 
       - name: Build Backend Image
         run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA
