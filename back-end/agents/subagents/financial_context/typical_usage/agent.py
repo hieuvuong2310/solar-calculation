@@ -19,5 +19,7 @@ energy_setter = Agent(
     model="gemini-2.0-flash",
     instruction="Extract and return only the numerical energy usage in kWh/month from {typical_energy_usage}.",
     output_key="energy_kWh",
-    output_schema=EnergyUsage, 
+    output_schema=EnergyUsage,
+    disallow_transfer_to_parent=True,
+    disallow_transfer_to_peers=True,
 )

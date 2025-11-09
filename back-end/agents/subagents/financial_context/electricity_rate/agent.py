@@ -71,4 +71,6 @@ usd_electricity_rates_setter = Agent(
     instruction="Extract and return only the JSON object representing the USD converted electricity rates from {usd_electricity_rates}.",
     output_key="usd_electricity_rates",
     output_schema=USDConvertedElectricityRatePlan,
+    disallow_transfer_to_parent=True,
+    disallow_transfer_to_peers=True,
 )

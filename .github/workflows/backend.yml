@@ -35,4 +35,4 @@ jobs:
             --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA \
             --region=${{ env.RUN_REGION }} \
             --allow-unauthenticated \
-            --set-env-vars="GOOGLE_API_KEY=${{ env.GOOGLE_API_KEY }}" 
+            --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=FALSE,GOOGLE_API_KEY=${{ env.GOOGLE_API_KEY }}"
