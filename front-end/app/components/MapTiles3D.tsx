@@ -11,32 +11,37 @@ import { DracoLoader } from '@loaders.gl/draco';
 import { CubeGeometry } from '@luma.gl/engine';
 import { Matrix4 } from '@math.gl/core';
 
-interface MapTiles3DProps {
+type MapTiles3DProps = {
   apiKey: string;
   center?: { lat: number; lng: number };
   height?: string;
   width?: string;
-}
+};
 
-interface PanelInstance {
-  position: [number, number, number];
-  transform: number[];
-}
+type SolarPanelLocation = {
+  lat: number;
+  lng: number;
+  azimuthDegrees?: number;
+  pitchDegrees?: number;
+  heightMeters?: number;
+  value?: number;
+  planeIndex?: number;
+};
 
-interface SolarLayoutResponse {
+type SolarLayoutResponse = {
   success: boolean;
   error?: string;
   maskUrl?: string;
-  panelCenters?: Array<{ lat: number; lng: number; value?: number }>;
-  metadata?: {
-    width?: number;
-    height?: number;
-    origin?: number[];
-    resolution?: number[];
-    strideX?: number;
-    strideY?: number;
-  };
-}
+  panelLocations?: SolarPanelLocation[];
+  metadata?: Record<string, unknown>;
+  buildingInsight?: Record<string, unknown>;
+  solarData?: Record<string, unknown>;
+};
+
+type PanelInstance = {
+  position: [number, number, number];
+  transform: number[];
+};
 
 type DeckViewState = {
   latitude: number;
@@ -198,10 +203,10 @@ export default function MapTiles3D({
     [numPanels]
   );
 
-  const createPanelInstancesFromLocations = useCallback(
-    (locations: Array<{ lat: number; lng: number }>): PanelInstance[] => {
-      const pitchRad = (PANEL_TILT_DEGREES * Math.PI) / 180;
-      const azimuthRad = (PANEL_AZIMUTH_DEGREES * Math.PI) / 180;
+  const createPanelInstancesFromLocations = useCallback((locations: SolarPanelLocation[]): PanelInstance[] => {
+    return locations.map((location) => {
+      const pitchRad = ((location.pitchDegrees ?? PANEL_TILT_DEGREES) * Math.PI) / 180;
+      const azimuthRad = ((location.azimuthDegrees ?? PANEL_AZIMUTH_DEGREES) * Math.PI) / 180;
 
       const modelMatrix = new Matrix4()
         .identity()
@@ -209,13 +214,14 @@ export default function MapTiles3D({
         .rotateZ(Math.PI - azimuthRad)
         .rotateX(-pitchRad);
 
-      return locations.map((location) => ({
-        position: [location.lng, location.lat, PANEL_HEIGHT_ABOVE_GROUND],
-        transform: modelMatrix.clone().toArray(),
-      }));
-    },
-    []
-  );
+      const height = location.heightMeters ?? PANEL_HEIGHT_ABOVE_GROUND;
+
+      return {
+        position: [location.lng, location.lat, height],
+        transform: modelMatrix.toArray(),
+      };
+    });
+  }, []);
 
   const placePanelsAt = useCallback(
     (lat: number, lng: number, opts?: { zoom?: number; recenter?: boolean; pitch?: number; bearing?: number }) => {
@@ -303,55 +309,54 @@ export default function MapTiles3D({
         panels: numPanels.toString(),
       });
 
-      console.log("params url search", params.toString());
       const response = await fetch(`/api/solar-layout?${params.toString()}`, {
         method: 'GET',
       });
-      console.log("response from solar layout", response);
 
       const data: SolarLayoutResponse = await response.json();
-      console.log("data from solar layout", data);
 
       if (!response.ok || !data.success) {
         console.error('Solar layout request failed:', data);
         alert(data.error || 'Failed to fetch solar layout from Google Solar API.');
         return;
       }
-      console.log("data", data);
 
-      const centers = data.panelCenters?.filter((center): center is { lat: number; lng: number } => {
-        if (typeof center?.lat !== 'number' || typeof center?.lng !== 'number') {
+      const locations = data.panelLocations?.filter((location): location is SolarPanelLocation => {
+        if (typeof location?.lat !== 'number' || typeof location?.lng !== 'number') {
           return false;
         }
-        if (!Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+        if (!Number.isFinite(location.lat) || !Number.isFinite(location.lng)) {
           return false;
         }
-        if (center.lat < -90 || center.lat > 90 || center.lng < -180 || center.lng > 180) {
+        if (location.lat < -90 || location.lat > 90 || location.lng < -180 || location.lng > 180) {
           return false;
         }
         return true;
       });
-      console.log("centers", centers);
 
-      if (!centers || centers.length === 0) {
+      if (!locations || locations.length === 0) {
         alert('Solar API did not return any valid roof segments. Try a different location.');
         return;
       }
 
-      const panelInstances = createPanelInstancesFromLocations(centers);
+      if (process.env.NODE_ENV !== 'production' && locations[0]) {
+        console.log('First solar panel location:', locations[0]);
+      }
+
+      const panelInstances = createPanelInstancesFromLocations(locations);
       setPanels(panelInstances);
 
-      const sum = centers.reduce(
-        (acc, center) => {
-          acc.lat += center.lat;
-          acc.lng += center.lng;
+      const sum = locations.reduce(
+        (acc, location) => {
+          acc.lat += location.lat;
+          acc.lng += location.lng;
           return acc;
         },
         { lat: 0, lng: 0 }
       );
 
-      const avgLat = sum.lat / centers.length;
-      const avgLng = sum.lng / centers.length;
+      const avgLat = sum.lat / locations.length;
+      const avgLng = sum.lng / locations.length;
       const safeLat = Math.max(-85, Math.min(85, avgLat));
       let safeLng = avgLng;
       if (!Number.isNaN(safeLng)) {
