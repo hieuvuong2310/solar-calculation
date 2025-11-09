@@ -21,12 +21,13 @@ logger = logging.getLogger(__name__)
 
 session_service = InMemorySessionService()
 
-@app.post("/")
+@app.api_route("/", methods=["POST", "GET"], summary="Run agent pipeline")
 async def run_agents(input_data: Optional[AddressInput] = None):
-    """
-    Run the agent pipeline.
-    - Accepts optional AddressInput in the body; if not provided, uses a sample.
-    - Uses a unique session id per request to avoid AlreadyExistsError.
+    """Run the agent pipeline (POST with JSON body or GET fallback).
+
+    - POST: pass an AddressInput JSON.
+    - GET: no body; sample payload is used.
+    - Each invocation uses a unique session id to avoid AlreadyExistsError.
     """
     APP_NAME = "agents"
     USER_ID = "user"
