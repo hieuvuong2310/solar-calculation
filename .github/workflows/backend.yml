@@ -1,7 +1,7 @@
 # .github/workflows/backend.yml
 name: Deploy Backend to Cloud Run
 on:
-  push:
+  pull_request:
     branches:
       - main
 env:
