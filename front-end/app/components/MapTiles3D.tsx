@@ -23,6 +23,21 @@ interface PanelInstance {
   transform: number[];
 }
 
+interface SolarLayoutResponse {
+  success: boolean;
+  error?: string;
+  maskUrl?: string;
+  panelCenters?: Array<{ lat: number; lng: number; value?: number }>;
+  metadata?: {
+    width?: number;
+    height?: number;
+    origin?: number[];
+    resolution?: number[];
+    strideX?: number;
+    strideY?: number;
+  };
+}
+
 type DeckViewState = {
   latitude: number;
   longitude: number;
@@ -73,6 +88,7 @@ export default function MapTiles3D({
   const [latInput, setLatInput] = useState<string>('');
   const [lngInput, setLngInput] = useState<string>('');
   const [panels, setPanels] = useState<PanelInstance[]>([]);
+  const [isFetchingSolarLayout, setIsFetchingSolarLayout] = useState<boolean>(false);
   const [initialized, setInitialized] = useState(false);
   const [viewState, setViewState] = useState<DeckViewState>(() => ({
     ...INITIAL_VIEW_STATE,
@@ -182,6 +198,25 @@ export default function MapTiles3D({
     [numPanels]
   );
 
+  const createPanelInstancesFromLocations = useCallback(
+    (locations: Array<{ lat: number; lng: number }>): PanelInstance[] => {
+      const pitchRad = (PANEL_TILT_DEGREES * Math.PI) / 180;
+      const azimuthRad = (PANEL_AZIMUTH_DEGREES * Math.PI) / 180;
+
+      const modelMatrix = new Matrix4()
+        .identity()
+        .scale([PANEL_LENGTH, PANEL_WIDTH, PANEL_THICKNESS])
+        .rotateZ(Math.PI - azimuthRad)
+        .rotateX(-pitchRad);
+
+      return locations.map((location) => ({
+        position: [location.lng, location.lat, PANEL_HEIGHT_ABOVE_GROUND],
+        transform: modelMatrix.clone().toArray(),
+      }));
+    },
+    []
+  );
+
   const placePanelsAt = useCallback(
     (lat: number, lng: number, opts?: { zoom?: number; recenter?: boolean; pitch?: number; bearing?: number }) => {
       const newPanels = createPanelInstances(lat, lng);
@@ -249,6 +284,95 @@ export default function MapTiles3D({
 
     placePanelsAt(lat, lng, { zoom: 20, recenter: true });
   }, [latInput, lngInput, placePanelsAt]);
+
+  const handleFetchSolarLayout = useCallback(async () => {
+    const currentLat = viewState.latitude;
+    const currentLng = viewState.longitude;
+
+    if (Number.isNaN(currentLat) || Number.isNaN(currentLng)) {
+      alert('Current map view is invalid. Try repositioning the map and retry.');
+      return;
+    }
+
+    setIsFetchingSolarLayout(true);
+
+    try {
+      const params = new URLSearchParams({
+        lat: currentLat.toString(),
+        lng: currentLng.toString(),
+        panels: numPanels.toString(),
+      });
+
+      console.log("params url search", params.toString());
+      const response = await fetch(`/api/solar-layout?${params.toString()}`, {
+        method: 'GET',
+      });
+      console.log("response from solar layout", response);
+
+      const data: SolarLayoutResponse = await response.json();
+      console.log("data from solar layout", data);
+
+      if (!response.ok || !data.success) {
+        console.error('Solar layout request failed:', data);
+        alert(data.error || 'Failed to fetch solar layout from Google Solar API.');
+        return;
+      }
+      console.log("data", data);
+
+      const centers = data.panelCenters?.filter((center): center is { lat: number; lng: number } => {
+        if (typeof center?.lat !== 'number' || typeof center?.lng !== 'number') {
+          return false;
+        }
+        if (!Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+          return false;
+        }
+        if (center.lat < -90 || center.lat > 90 || center.lng < -180 || center.lng > 180) {
+          return false;
+        }
+        return true;
+      });
+      console.log("centers", centers);
+
+      if (!centers || centers.length === 0) {
+        alert('Solar API did not return any valid roof segments. Try a different location.');
+        return;
+      }
+
+      const panelInstances = createPanelInstancesFromLocations(centers);
+      setPanels(panelInstances);
+
+      const sum = centers.reduce(
+        (acc, center) => {
+          acc.lat += center.lat;
+          acc.lng += center.lng;
+          return acc;
+        },
+        { lat: 0, lng: 0 }
+      );
+
+      const avgLat = sum.lat / centers.length;
+      const avgLng = sum.lng / centers.length;
+      const safeLat = Math.max(-85, Math.min(85, avgLat));
+      let safeLng = avgLng;
+      if (!Number.isNaN(safeLng)) {
+        safeLng = ((safeLng + 180) % 360 + 360) % 360 - 180;
+      }
+
+      setViewState((prev) => ({
+        ...prev,
+        latitude: safeLat,
+        longitude: safeLng,
+        zoom: Math.max(prev.zoom ?? INITIAL_VIEW_STATE.zoom, 19),
+        pitch: prev.pitch ?? INITIAL_VIEW_STATE.pitch,
+        bearing: prev.bearing ?? INITIAL_VIEW_STATE.bearing,
+      }));
+    } catch (err) {
+      console.error('Unexpected solar layout error:', err);
+      alert('Unexpected error while generating solar layout. Check console for details.');
+    } finally {
+      setIsFetchingSolarLayout(false);
+    }
+  }, [createPanelInstancesFromLocations, numPanels, viewState.latitude, viewState.longitude]);
 
   const handleClearPanels = useCallback(() => {
     setPanels([]);
@@ -524,6 +648,23 @@ export default function MapTiles3D({
               }}
             >
               Place Solar Panels
+            </button>
+            <button
+              onClick={handleFetchSolarLayout}
+              disabled={isFetchingSolarLayout}
+              style={{
+                padding: '12px 20px',
+                backgroundColor: isFetchingSolarLayout ? '#9ca3af' : '#9333ea',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: isFetchingSolarLayout ? 'not-allowed' : 'pointer',
+                fontSize: '14px',
+                fontWeight: 500,
+                transition: 'background-color 0.2s ease-in-out',
+              }}
+            >
+              {isFetchingSolarLayout ? 'Generating Layout…' : 'Generate via Solar API'}
             </button>
             <button
               onClick={handleClearPanels}
