@@ -1,7 +1,7 @@
 # .github/workflows/backend.yml
 name: Deploy Backend to Cloud Run
 on:
-  pull_request:
+  push:
     branches:
       - main
 env:
@@ -19,25 +19,20 @@ jobs:
       - id: 'auth'
         uses: 'google-github-actions/auth@v2'
         with:
-          credentials_json: $SA_KEY_JSON
+          credentials_json: ${{ env.SA_KEY_JSON }}
       - name: 'Set up Cloud SDK'
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: $PROJECT_ID
-
-      - name: Copy Dockerfile
-        run: cp back-end/Dockerfile Dockerfile
+          project_id: ${{ env.PROJECT_ID }}
 
       - name: Build Backend Image
-        run: gcloud builds submit --tag $RUN_REGION-docker.pkg.dev/$PROJECT_ID/solar-savings/backend-image:$GITHUB_SHA
-
-      - name: Remove Backend Dockerfile
-        run: rm Dockerfile
+        run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA
+        working-directory: back-end
 
       - name: Deploy Backend
         run: |
           gcloud run deploy backend \
-            --image=$RUN_REGION-docker.pkg.dev/$PROJECT_ID/solar-savings/backend-image:$GITHUB_SHA \
-            --region=$RUN_REGION \
+            --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA \
+            --region=${{ env.RUN_REGION }} \
             --allow-unauthenticated \
-            --set-env-vars="GOOGLE_API_KEY=$GOOGLE_API_KEY" 
+            --set-env-vars="GOOGLE_API_KEY=${{ env.GOOGLE_API_KEY }}" 
