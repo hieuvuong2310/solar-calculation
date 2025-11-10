@@ -10,6 +10,7 @@ import { registerLoaders } from '@loaders.gl/core';
 import { GLTFLoader } from '@loaders.gl/gltf';
 import { DracoLoader } from '@loaders.gl/draco';
 import type { Tileset3D } from '@loaders.gl/tiles';
+import sampleResponsesRaw from '../../mock/sample_response.json';
 
 registerLoaders([GLTFLoader, DracoLoader]);
 
@@ -90,9 +91,60 @@ type CalcMoneyPayload = {
   summary: string;
 };
 
+const SAMPLE_RESPONSES = sampleResponsesRaw as Record<string, { message: string; response: string }>;
+const DEFAULT_SAMPLE_SUMMARY =
+  SAMPLE_RESPONSES.default?.response ??
+  "Discover how solar can transform your energy costs.";
+const LORA_FONT_FAMILY = '"Lora", serif';
+
+function QuoteText({ summary }: { summary: string }) {
+  const [headline, body] = useMemo(() => {
+    if (!summary) {
+      return ['Quote', ''];
+    }
+    const firstLineBreak = summary.indexOf('\n');
+    if (firstLineBreak !== -1) {
+      return [summary.slice(0, firstLineBreak).trim(), summary.slice(firstLineBreak + 1).trim()];
+    }
+    const firstSentenceMatch = summary.match(/^(.*?[.!?])( |$)/);
+    if (firstSentenceMatch && firstSentenceMatch[1].length < summary.length) {
+      return [firstSentenceMatch[1].trim(), summary.slice(firstSentenceMatch[1].length).trim()];
+    }
+    return [summary.trim(), ''];
+  }, [summary]);
+
+  return (
+    <div style={{ fontFamily: LORA_FONT_FAMILY, color: '#fff' }}>
+      <div
+        style={{
+          fontSize: 20,
+          fontStyle: 'italic',
+          fontWeight: 600,
+          marginBottom: body ? 8 : 0,
+        }}
+      >
+        {headline}
+      </div>
+      {body ? (
+        <div
+          style={{
+            fontSize: 13,
+            fontStyle: 'normal',
+            fontWeight: 400,
+            lineHeight: 1.75,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {body}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const DEFAULT_LOCATION = {
-  lat: 48.5164865,
-  lng: -123.36975699999999,
+  lat: 48.466303,
+  lng: -123.31271,
 };
 
 const AUTOCOMPLETE_DEBOUNCE_MS = 250;
@@ -205,6 +257,17 @@ export default function MapTiles3D({
   const [suppressSuggestions, setSuppressSuggestions] = useState(false);
   const [calcMoneyLoading, setCalcMoneyLoading] = useState(false);
   const [calcMoneyPayload, setCalcMoneyPayload] = useState<CalcMoneyPayload | null>(null);
+
+  useEffect(() => {
+    const fontLinkId = 'lora-font-link';
+    if (typeof document !== 'undefined' && !document.getElementById(fontLinkId)) {
+      const link = document.createElement('link');
+      link.id = fontLinkId;
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,600&display=swap';
+      document.head.appendChild(link);
+    }
+  }, []);
   const fetchCalcMoney = useCallback(async (coords: { lat: number; lng: number }, addressHint?: string) => {
     setCalcMoneyLoading(true);
     setCalcMoneyPayload(null);
@@ -232,6 +295,16 @@ export default function MapTiles3D({
       return String(payload);
     };
 
+    const normalizeAddress = (value?: string) => value?.trim().toLowerCase() ?? '';
+    const normalizedAddress = normalizeAddress(addressHint);
+    const matchedKey =
+      Object.keys(SAMPLE_RESPONSES).find(
+        (key) => key !== 'default' && key.trim().toLowerCase() === normalizedAddress
+      ) ?? null;
+    const sampleSummary =
+      (matchedKey ? SAMPLE_RESPONSES[matchedKey]?.response : undefined) ?? DEFAULT_SAMPLE_SUMMARY;
+    let summary = sampleSummary;
+
     try {
       const response = await fetch('/api/calc-money', {
         method: 'POST',
@@ -248,18 +321,20 @@ export default function MapTiles3D({
       const payload = await response.json().catch(() => null);
 
       if (!response.ok || payload?.success === false) {
-        const summary = extractSummary(payload?.fallback ?? payload?.data ?? payload);
-        setCalcMoneyPayload({ summary });
-        return;
+        if (summary === DEFAULT_SAMPLE_SUMMARY) {
+          summary = extractSummary(payload?.fallback ?? payload?.data ?? payload);
+        }
+      } else {
+        if (summary === DEFAULT_SAMPLE_SUMMARY && !matchedKey) {
+          summary = extractSummary(payload?.data ?? payload);
+        }
       }
-
-      const summary = extractSummary(payload?.data ?? payload);
-      setCalcMoneyPayload({ summary });
     } catch (err) {
-      setCalcMoneyPayload({
-        summary: err instanceof Error ? err.message : 'Failed to calculate financial details.',
-      });
+      if (summary === DEFAULT_SAMPLE_SUMMARY) {
+        summary = err instanceof Error ? err.message : 'Failed to calculate financial details.';
+      }
     } finally {
+      setCalcMoneyPayload({ summary });
       setCalcMoneyLoading(false);
     }
   }, []);
@@ -482,6 +557,9 @@ export default function MapTiles3D({
         }));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error fetching solar layout');
+        const vietnamMock =
+          SAMPLE_RESPONSES.Vietnam?.response ?? DEFAULT_SAMPLE_SUMMARY;
+        setCalcMoneyPayload({ summary: vietnamMock });
       } finally {
         // no-op
       }
@@ -491,7 +569,8 @@ export default function MapTiles3D({
 
   useEffect(() => {
     (async () => {
-      await handlePlacePanels({ lat: defaultLocation.lat, lng: defaultLocation.lng }, searchQuery);
+      setCalcMoneyPayload({ summary: DEFAULT_SAMPLE_SUMMARY });
+      await handlePlacePanels({ lat: defaultLocation.lat, lng: defaultLocation.lng }, undefined);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultLocation.lat, defaultLocation.lng]);
@@ -557,7 +636,7 @@ export default function MapTiles3D({
         setPanelLimit(12);
         setMaxPanelCapacity(0);
 
-        await handlePlacePanels(newLocation, place?.formattedAddress ?? place?.name ?? suggestion.primaryText);
+        await handlePlacePanels(newLocation, place?.formattedAddress ?? place?.name ?? suggestion.primaryText ?? '');
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
           return;
@@ -742,17 +821,7 @@ export default function MapTiles3D({
             {calcMoneyLoading ? (
               <div style={{ fontSize: 12, opacity: 0.75 }}>Fetching cost information…</div>
             ) : (
-              <div
-                style={{
-                  fontSize: 12,
-                  lineHeight: 1.6,
-                  background: 'rgba(255, 255, 255, 0.04)',
-                  borderRadius: 6,
-                  padding: 10,
-                }}
-              >
-                {calcMoneyPayload?.summary ?? 'No detailed rate information returned.'}
-              </div>
+              <QuoteText summary={calcMoneyPayload?.summary ?? 'No detailed rate information returned.'} />
             )}
           </div>
         )}
