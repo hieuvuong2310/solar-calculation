@@ -10,6 +10,7 @@ env:
   GOOGLE_CLOUD_PROJECT: ${{ secrets.PROJECT_ID }}
   GOOGLE_CLOUD_LOCATION: us-central1
   SA_KEY_JSON: ${{ secrets.SA_KEY_JSON }}
+  NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ secrets.MAP_TILES_API_KEY }}
 jobs:
   deploy:
     name: Deploy to Cloud Run
@@ -36,7 +37,7 @@ jobs:
             --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA \
             --region=${{ env.RUN_REGION }} \
             --allow-unauthenticated \
-              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }}"
+              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }},NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}"
 
       - name: Build Frontend Image
         run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA
@@ -48,4 +49,4 @@ jobs:
             --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA \
             --region=${{ env.RUN_REGION }} \
             --allow-unauthenticated \
-              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }}"
+              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }},NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}"
