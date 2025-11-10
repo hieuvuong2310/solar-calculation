@@ -27,6 +27,21 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
+      - name: Build Frontend Image
+        run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA
+        working-directory: front-end
+
+      - name: Deploy Frontend
+        run: |
+          gcloud run deploy frontend \
+            --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA \
+            --region=${{ env.RUN_REGION }} \
+            --memory=4Gi \
+            --cpu=2 \
+            --concurrency=1 \
+            --allow-unauthenticated \
+              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }},NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}"
+
       - name: Build Backend Image
         run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA
         working-directory: back-end
@@ -39,14 +54,3 @@ jobs:
             --allow-unauthenticated \
               --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }},NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}"
 
-      - name: Build Frontend Image
-        run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA
-        working-directory: front-end
-
-      - name: Deploy Frontend
-        run: |
-          gcloud run deploy frontend \
-            --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA \
-            --region=${{ env.RUN_REGION }} \
-            --allow-unauthenticated \
-              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }},NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}"
