@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import DeckGL from '@deck.gl/react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { Layer, LayersList, MapViewState } from '@deck.gl/core';
+import DeckGL from '@deck.gl/react';
 import { Tile3DLayer } from '@deck.gl/geo-layers';
 import { SimpleMeshLayer } from '@deck.gl/mesh-layers';
 import { registerLoaders } from '@loaders.gl/core';
@@ -10,20 +11,37 @@ import { GLTFLoader } from '@loaders.gl/gltf';
 import { DracoLoader } from '@loaders.gl/draco';
 import { CubeGeometry } from '@luma.gl/engine';
 import { Matrix4 } from '@math.gl/core';
+import type { Tileset3D } from '@loaders.gl/tiles';
 
-interface MapTiles3DProps {
+registerLoaders([GLTFLoader, DracoLoader]);
+
+type PlaceSuggestion = {
+  placeId: string;
+  primaryText: string;
+  secondaryText?: string;
+};
+
+type PlaceDetails = {
+  placeId: string;
+  name?: string;
+  formattedAddress?: string;
+  location?: {
+    latitude?: number;
+    longitude?: number;
+  };
+};
+
+type MapTiles3DProps = {
   apiKey: string;
-  center?: { lat: number; lng: number };
   height?: string;
   width?: string;
-}
+  center?: {
+    lat: number;
+    lng: number;
+  };
+};
 
-interface PanelInstance {
-  position: [number, number, number];
-  transform: number[];
-}
-
-type DeckViewState = {
+type DeckState = {
   latitude: number;
   longitude: number;
   zoom: number;
@@ -31,270 +49,457 @@ type DeckViewState = {
   bearing: number;
 };
 
-const defaultCenter = {
-  lat: 37.7793,
-  lng: -122.4193,
+type SolarPanelEntry = {
+  center?: {
+    latitude?: number;
+    longitude?: number;
+  };
+  orientation?: string;
+  segmentIndex?: number;
+  yearlyEnergyDcKwh?: number;
 };
 
-const PANEL_LENGTH = 3.2;
-const PANEL_WIDTH = 1.9;
-const PANEL_THICKNESS = 0.15;
-const PANEL_TILT_DEGREES = 90;
-const PANEL_AZIMUTH_DEGREES = 0;
-const PANEL_HEIGHT_ABOVE_GROUND = 55;
-const EARTH_RADIUS = 6378137;
-
-const INITIAL_VIEW_STATE: DeckViewState = {
-  latitude: defaultCenter.lat,
-  longitude: defaultCenter.lng,
-  zoom: 18.7,
-  pitch: 60,
-  bearing: 0,
+type RoofSegmentStat = {
+  pitchDegrees?: number;
+  azimuthDegrees?: number;
+  planeHeightAtCenterMeters?: number;
 };
 
-let loadersRegistered = false;
+type BuildingInsights = {
+  name?: string;
+  center?: {
+    latitude?: number;
+    longitude?: number;
+  };
+  solarPotential?: {
+    panelHeightMeters?: number;
+    panelWidthMeters?: number;
+    solarPanels?: SolarPanelEntry[];
+    roofSegmentStats?: RoofSegmentStat[];
+    maxArrayPanelsCount?: number;
+  };
+};
 
-if (!loadersRegistered) {
-  registerLoaders([GLTFLoader, DracoLoader]);
-  loadersRegistered = true;
+type PanelInstance = {
+  position: [number, number, number];
+  transform: number[];
+  color: [number, number, number, number];
+};
+
+const DEFAULT_LOCATION = {
+  lat: 48.5164865,
+  lng: -123.36975699999999,
+};
+
+const PANEL_THICKNESS_METERS = 0.08;
+const AUTOCOMPLETE_DEBOUNCE_MS = 250;
+
+function generateSessionToken(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+const PANEL_SCALE = 0.65;
+
+function orientationDimensions(
+  orientation: string | undefined,
+  panelHeight: number,
+  panelWidth: number
+): [number, number] {
+  const scaledHeight = panelHeight * PANEL_SCALE;
+  const scaledWidth = panelWidth * PANEL_SCALE;
+
+  if (orientation?.toUpperCase() === 'PORTRAIT') {
+    return [scaledHeight, scaledWidth];
+  }
+  return [scaledWidth, scaledHeight];
+}
+
+function createPanelInstancesFromBuilding(data: BuildingInsights | undefined): PanelInstance[] {
+  if (!data?.solarPotential?.solarPanels?.length) {
+    return [];
+  }
+
+  const roofStats = data.solarPotential.roofSegmentStats ?? [];
+  const panelHeight = data.solarPotential.panelHeightMeters ?? 1.8;
+  const panelWidth = data.solarPotential.panelWidthMeters ?? 1.1;
+
+  return data.solarPotential.solarPanels
+    .map((panel) => {
+      const lat = panel.center?.latitude;
+      const lng = panel.center?.longitude;
+      if (typeof lat !== 'number' || typeof lng !== 'number') {
+        return undefined;
+      }
+
+      let segment: RoofSegmentStat | undefined;
+      if (
+        typeof panel.segmentIndex === 'number' &&
+        panel.segmentIndex >= 0 &&
+        panel.segmentIndex < roofStats.length
+      ) {
+        segment = roofStats[panel.segmentIndex];
+      }
+      if (!segment && typeof panel.segmentIndex === 'number') {
+        segment = roofStats.find((_, idx) => idx === panel.segmentIndex);
+      }
+
+      const pitchDeg = segment?.pitchDegrees ?? 0;
+      const azimuthDeg = segment?.azimuthDegrees ?? 0;
+      const baseHeight = segment?.planeHeightAtCenterMeters ?? 0;
+      const height = baseHeight - 16;
+
+      const [length, width] = orientationDimensions(panel.orientation, panelHeight, panelWidth);
+
+      const pitchRad = (pitchDeg * Math.PI) / 180;
+      const azimuthRad = (azimuthDeg * Math.PI) / 180;
+
+      const matrix = new Matrix4()
+        .identity()
+        .scale([length, width, PANEL_THICKNESS_METERS])
+        .rotateZ(Math.PI - azimuthRad)
+        .rotateX(-pitchRad);
+
+      const energy = panel.yearlyEnergyDcKwh ?? 0;
+      const energyScale = Math.min(1, energy / 6000);
+      const color: [number, number, number, number] = [
+        Math.round(255 * energyScale),
+        64,
+        Math.round(255 * (1 - energyScale)),
+        220,
+      ];
+
+      return {
+        position: [lng, lat, height],
+        transform: matrix.toArray(),
+        color,
+      } satisfies PanelInstance;
+    })
+    .filter((panel): panel is PanelInstance => Boolean(panel));
 }
 
 export default function MapTiles3D({
   apiKey,
-  center = defaultCenter,
   height = '100vh',
   width = '100%',
+  center,
 }: MapTiles3DProps) {
+  const defaultLocation = useMemo(
+    () => (center ? { lat: center.lat, lng: center.lng } : DEFAULT_LOCATION),
+    [center]
+  );
+  const initialViewState = useMemo<DeckState>(
+    () => ({
+      latitude: defaultLocation.lat,
+      longitude: defaultLocation.lng,
+      zoom: 19.3,
+      pitch: 60,
+      bearing: 0,
+    }),
+    [defaultLocation.lat, defaultLocation.lng]
+  );
+
+  const [viewState, setViewState] = useState<DeckState>(initialViewState);
+  const [targetLocation, setTargetLocation] = useState(defaultLocation);
+  const [panelInstances, setPanelInstances] = useState<PanelInstance[]>([]);
+  const [panelLimit, setPanelLimit] = useState<number>(0);
+  const [maxPanelCapacity, setMaxPanelCapacity] = useState<number>(0);
+  const [building, setBuilding] = useState<BuildingInsights | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [numPanels, setNumPanels] = useState<number>(12);
-  const [showPanelConfig, setShowPanelConfig] = useState<boolean>(false);
-  const [searchAddress, setSearchAddress] = useState<string>('');
-  const [isSearching, setIsSearching] = useState<boolean>(false);
-  const [latInput, setLatInput] = useState<string>('');
-  const [lngInput, setLngInput] = useState<string>('');
-  const [panels, setPanels] = useState<PanelInstance[]>([]);
-  const [initialized, setInitialized] = useState(false);
-  const [viewState, setViewState] = useState<DeckViewState>(() => ({
-    ...INITIAL_VIEW_STATE,
-    latitude: center.lat ?? INITIAL_VIEW_STATE.latitude,
-    longitude: center.lng ?? INITIAL_VIEW_STATE.longitude,
-  }));
-
-  const cubeGeometry = useMemo(() => new CubeGeometry(), []);
-  const identityTransform = useMemo(() => new Matrix4().identity().toArray(), []);
-
-  const panelLayer = useMemo(
-    () =>
-      new SimpleMeshLayer<PanelInstance>({
-        id: 'solar-panels',
-        data: panels.filter((panel): panel is PanelInstance => Boolean(panel)),
-        mesh: cubeGeometry,
-        getPosition: (d: PanelInstance | undefined) => d?.position ?? [0, 0, 0],
-        getTransformMatrix: (d: PanelInstance | undefined) => d?.transform ?? identityTransform,
-        getColor: [0, 0, 128, 230],
-      }),
-    [cubeGeometry, identityTransform, panels]
-  );
-
-  const tilesLayer = useMemo(
-    () =>
-      new Tile3DLayer({
-        id: 'google-3d-tiles',
-        data: `https://tile.googleapis.com/v1/3dtiles/root.json?key=${apiKey}`,
-        loadOptions: {
-          throttleRequests: true,
-        },
-        onTilesetLoad: (tileset: unknown) => {
-          setError(null);
-          if (tileset && typeof tileset === 'object' && 'tileset' in tileset) {
-            const tilesetData = tileset as { tileset?: { options?: Record<string, unknown> } };
-            if (tilesetData.tileset) {
-              const tileset3d = tilesetData.tileset;
-              tileset3d.options = tileset3d.options || {};
-              tileset3d.options.unloadTiles = false;
-              tileset3d.options.refreshTiles = false;
-              tileset3d.options.preloadTiles = true;
-              tileset3d.options.viewDistanceScale = 3;
-              tileset3d.options.maximumMemoryUsage = 512;
-              tileset3d.options.refinementStrategy = 'REPLACE';
-            }
-          }
-        },
-        onError: (layerError: Error) => {
-          console.error('Tiles3D error:', layerError);
-          setTimeout(() => {
-            setError(`Failed to load 3D tiles: ${layerError.message || 'Unknown error'}`);
-          }, 0);
-        },
-      }),
-    [apiKey]
-  );
-
-  const deckLayers = useMemo<LayersList>(
-    () => [tilesLayer as unknown as Layer, panelLayer as unknown as Layer],
-    [panelLayer, tilesLayer]
-  );
-
-  const createPanelInstances = useCallback(
-    (lat: number, lng: number): PanelInstance[] => {
-      const metersPerDegreeLat = (Math.PI / 180) * EARTH_RADIUS;
-      const metersPerDegreeLng = metersPerDegreeLat * Math.cos((lat * Math.PI) / 180);
-
-      const panelsPerRow = Math.ceil(Math.sqrt(numPanels));
-      const panelSpacing = PANEL_LENGTH + 0.6;
-      const totalWidth = (panelsPerRow - 1) * panelSpacing;
-      const totalHeight = (panelsPerRow - 1) * panelSpacing;
-      const startX = -totalWidth / 2;
-      const startY = -totalHeight / 2;
-
-      const pitchRad = (PANEL_TILT_DEGREES * Math.PI) / 180;
-      const azimuthRad = (PANEL_AZIMUTH_DEGREES * Math.PI) / 180;
-
-      const modelMatrix = new Matrix4()
-        .identity()
-        .scale([PANEL_LENGTH, PANEL_WIDTH, PANEL_THICKNESS])
-        .rotateZ(Math.PI - azimuthRad)
-        .rotateX(-pitchRad);
-
-      const instances: PanelInstance[] = [];
-
-      for (let i = 0; i < numPanels; i += 1) {
-        const row = Math.floor(i / panelsPerRow);
-        const col = i % panelsPerRow;
-
-        const offsetX = startX + col * panelSpacing;
-        const offsetY = startY + row * panelSpacing;
-
-        const latOffset = offsetY / metersPerDegreeLat;
-        const lngOffset = offsetX / metersPerDegreeLng;
-
-        const panelLat = lat + latOffset;
-        const panelLng = lng + lngOffset;
-
-        instances.push({
-          position: [panelLng, panelLat, PANEL_HEIGHT_ABOVE_GROUND],
-          transform: modelMatrix.clone().toArray(),
-        });
-      }
-
-      return instances;
-    },
-    [numPanels]
-  );
-
-  const placePanelsAt = useCallback(
-    (lat: number, lng: number, opts?: { zoom?: number; recenter?: boolean; pitch?: number; bearing?: number }) => {
-      const newPanels = createPanelInstances(lat, lng);
-      setPanels(newPanels);
-
-      if (opts?.recenter !== false) {
-        setViewState((prev) => ({
-          ...prev,
-          latitude: lat,
-          longitude: lng,
-          zoom: opts?.zoom ?? prev.zoom ?? INITIAL_VIEW_STATE.zoom,
-          pitch: opts?.pitch ?? prev.pitch ?? INITIAL_VIEW_STATE.pitch,
-          bearing: opts?.bearing ?? prev.bearing ?? INITIAL_VIEW_STATE.bearing,
-        }));
-      }
-    },
-    [createPanelInstances]
-  );
-
-  const handlePlacePanels = useCallback(() => {
-    placePanelsAt(viewState.latitude, viewState.longitude, { recenter: false });
-  }, [placePanelsAt, viewState.latitude, viewState.longitude]);
-
-  const handleSearchAddress = useCallback(async () => {
-    if (!searchAddress.trim()) {
-      return;
-    }
-
-    setIsSearching(true);
-
-    try {
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(searchAddress)}&key=${apiKey}`
-      );
-      const data = await response.json();
-
-      if (data.status === 'OK' && data.results && data.results[0]) {
-        const location = data.results[0].geometry.location;
-        placePanelsAt(location.lat, location.lng, { zoom: 19.5, recenter: true });
-      } else {
-        console.warn('Geocoding failed:', data);
-        alert(`Geocoding failed: ${data.status || 'Unknown error'}`);
-      }
-    } catch (err) {
-      console.error('Geocoding request failed:', err);
-      alert('Failed to search address. Check console for details.');
-    } finally {
-      setIsSearching(false);
-    }
-  }, [apiKey, placePanelsAt, searchAddress]);
-
-  const handleSearchLatLng = useCallback(() => {
-    const lat = parseFloat(latInput);
-    const lng = parseFloat(lngInput);
-
-    if (Number.isNaN(lat) || Number.isNaN(lng)) {
-      alert('Please enter numeric latitude and longitude values.');
-      return;
-    }
-
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      alert('Latitude must be between -90 and 90, longitude between -180 and 180.');
-      return;
-    }
-
-    placePanelsAt(lat, lng, { zoom: 20, recenter: true });
-  }, [latInput, lngInput, placePanelsAt]);
-
-  const handleClearPanels = useCallback(() => {
-    setPanels([]);
-  }, []);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchSuggestions, setSearchSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchMessage, setSearchMessage] = useState<string | null>(null);
+  const [placesSessionToken, setPlacesSessionToken] = useState<string>(() => generateSessionToken());
+  const autocompleteAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (initialized) {
+    setTargetLocation(defaultLocation);
+    setViewState((prev) => ({
+      ...prev,
+      latitude: defaultLocation.lat,
+      longitude: defaultLocation.lng,
+    }));
+  }, [defaultLocation]);
+
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+
+    if (trimmed.length < 3) {
+      if (autocompleteAbortRef.current) {
+        autocompleteAbortRef.current.abort();
+        autocompleteAbortRef.current = null;
+      }
+      setSearchSuggestions([]);
+      setSearchMessage(null);
+      setSearchLoading(false);
       return;
     }
 
-    const rafId = requestAnimationFrame(() => {
-      placePanelsAt(center.lat, center.lng, {
-        zoom: INITIAL_VIEW_STATE.zoom,
-        recenter: true,
-        pitch: INITIAL_VIEW_STATE.pitch,
-        bearing: INITIAL_VIEW_STATE.bearing,
-      });
-      setInitialized(true);
-    });
+    const controller = new AbortController();
+    autocompleteAbortRef.current = controller;
 
-    return () => cancelAnimationFrame(rafId);
-  }, [center.lat, center.lng, initialized, placePanelsAt]);
+    const timeoutId = setTimeout(async () => {
+      try {
+        setSearchLoading(true);
+        setSearchMessage(null);
 
-  if (error) {
-    return (
-      <div
-        style={{
-          height,
-          width,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: '#1e1e1e',
-          color: '#fff',
-          padding: '20px',
-          textAlign: 'center',
-        }}
-      >
-        <div>
-          <h2 style={{ marginBottom: '10px' }}>Map Error</h2>
-          <p style={{ marginBottom: '10px' }}>{error}</p>
-          <p style={{ fontSize: '14px', opacity: 0.8 }}>Check console for additional details.</p>
-        </div>
-      </div>
-    );
-  }
+        const params = new URLSearchParams({
+          input: trimmed,
+          sessionToken: placesSessionToken,
+          originLat: targetLocation.lat.toString(),
+          originLng: targetLocation.lng.toString(),
+        });
+
+        const response = await fetch(`/api/places/autocomplete?${params.toString()}`, {
+          signal: controller.signal,
+        });
+
+        const payload = await response.json().catch(() => undefined);
+
+        if (!response.ok) {
+          const message = payload?.error ?? 'Failed to fetch suggestions';
+          setSearchSuggestions([]);
+          setSearchMessage(message);
+          return;
+        }
+
+        const suggestions: PlaceSuggestion[] = Array.isArray(payload?.suggestions)
+          ? payload.suggestions
+          : [];
+        setSearchSuggestions(suggestions);
+        setSearchMessage(suggestions.length === 0 ? 'No suggestions found.' : null);
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          return;
+        }
+        setSearchSuggestions([]);
+        setSearchMessage(err instanceof Error ? err.message : 'Failed to fetch suggestions');
+      } finally {
+        setSearchLoading(false);
+      }
+    }, AUTOCOMPLETE_DEBOUNCE_MS);
+
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [placesSessionToken, searchQuery, targetLocation.lat, targetLocation.lng]);
+
+  const effectiveMaxPanels = useMemo(() => {
+    if (panelInstances.length === 0) {
+      return 0;
+    }
+    const capacity = maxPanelCapacity > 0 ? Math.min(maxPanelCapacity, panelInstances.length) : panelInstances.length;
+    return capacity;
+  }, [maxPanelCapacity, panelInstances.length]);
+
+  useEffect(() => {
+    const maxAvailable = effectiveMaxPanels;
+    if (panelLimit > maxAvailable) {
+      setPanelLimit(maxAvailable);
+    }
+  }, [effectiveMaxPanels, panelLimit]);
+
+  const visiblePanels = useMemo(() => {
+    if (panelLimit <= 0) {
+      return [];
+    }
+    if (panelLimit >= panelInstances.length) {
+      return panelInstances;
+    }
+    return panelInstances.slice(0, panelLimit);
+  }, [panelInstances, panelLimit]);
+
+  const cubeGeometry = useMemo(() => new CubeGeometry(), []);
+
+  const panelLayer = useMemo<Layer | null>(() => {
+    if (visiblePanels.length === 0) {
+      return null;
+    }
+
+    return new SimpleMeshLayer<PanelInstance>({
+      id: 'solar-panels',
+      data: visiblePanels,
+      mesh: cubeGeometry,
+      getPosition: (d: PanelInstance) => d.position,
+      getTransformMatrix: (d: PanelInstance) => d.transform,
+      getColor: (d: PanelInstance) => d.color,
+    }) as unknown as Layer;
+  }, [cubeGeometry, visiblePanels]);
+
+  const tileLayer = useMemo<Layer>(() => {
+    return new Tile3DLayer({
+      id: 'google-3d-tiles',
+      data: `https://tile.googleapis.com/v1/3dtiles/root.json?key=${apiKey}`,
+      loadOptions: {
+        fetch: {
+          headers: {
+            Accept: 'application/octet-stream',
+            'X-GOOG-API-KEY': apiKey,
+          },
+        },
+      },
+      operation: 'draw',
+      onTilesetLoad: (tileset: Tileset3D) => {
+        const options = tileset?.options as Record<string, unknown>;
+        if (options) {
+          options.skipLevelOfDetail = false;
+          options.maximumMemoryUsage = 512;
+          options.viewDistanceScale = 1.2;
+        }
+      },
+    }) as unknown as Layer;
+  }, [apiKey]);
+
+  const deckLayers = useMemo<LayersList>(() => {
+    const layers: LayersList = [tileLayer];
+    if (panelLayer) {
+      layers.push(panelLayer);
+    }
+    return layers;
+  }, [panelLayer, tileLayer]);
+
+  const handlePlacePanels = useCallback(
+    async (overrideLocation?: { lat: number; lng: number }) => {
+      const location = overrideLocation ?? targetLocation;
+      setIsLoading(true);
+      setError(null);
+
+      if (overrideLocation) {
+        setTargetLocation(overrideLocation);
+      }
+
+      try {
+        const params = new URLSearchParams({
+          lat: location.lat.toString(),
+          lng: location.lng.toString(),
+        });
+
+        const response = await fetch(`/api/solar-layout?${params.toString()}`);
+        const payload = await response.json();
+
+        if (!response.ok) {
+          const message = payload?.error ?? 'Failed to fetch solar layout';
+          setError(message);
+          return;
+        }
+
+        const insight: BuildingInsights = payload;
+        setBuilding(insight);
+
+        const generatedPanels = createPanelInstancesFromBuilding(insight);
+        if (generatedPanels.length === 0) {
+          setError('No solar panels available for this location');
+        }
+        setPanelInstances(generatedPanels);
+
+        const maxPanelsFromInsight =
+          insight.solarPotential?.maxArrayPanelsCount ?? generatedPanels.length;
+        setMaxPanelCapacity(maxPanelsFromInsight);
+
+        const availablePanels =
+          maxPanelsFromInsight > 0
+            ? Math.min(maxPanelsFromInsight, generatedPanels.length)
+            : generatedPanels.length;
+        const initialLimit = Math.min(12, availablePanels);
+        setPanelLimit(initialLimit);
+
+        const centerLat = insight.center?.latitude ?? location.lat;
+        const centerLng = insight.center?.longitude ?? location.lng;
+        const resolvedLocation = { lat: centerLat, lng: centerLng };
+
+        setTargetLocation(resolvedLocation);
+
+        setViewState((prev) => ({
+          ...prev,
+          latitude: centerLat,
+          longitude: centerLng,
+          zoom: Math.max(prev.zoom, 19),
+        }));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unknown error fetching solar layout');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [targetLocation]
+  );
+
+  const handleSearchInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const value = event.target.value;
+    setSearchQuery(value);
+    setSearchMessage(null);
+
+    if (!value.trim()) {
+      setSearchSuggestions([]);
+      setPlacesSessionToken(generateSessionToken());
+    }
+  }, []);
+
+  const handleSuggestionSelect = useCallback(
+    async (suggestion: PlaceSuggestion) => {
+      setSearchQuery(suggestion.primaryText);
+      setSearchSuggestions([]);
+      setSearchMessage(null);
+      setSearchLoading(true);
+
+      try {
+        const params = new URLSearchParams({
+          placeId: suggestion.placeId,
+          sessionToken: placesSessionToken,
+        });
+
+        const response = await fetch(`/api/places/details?${params.toString()}`);
+        const payload = await response.json().catch(() => undefined);
+
+        if (!response.ok) {
+          const message = payload?.error ?? 'Failed to fetch place details';
+          setSearchMessage(message);
+          return;
+        }
+
+        const place: PlaceDetails | undefined = payload?.place;
+        const lat = place?.location?.latitude;
+        const lng = place?.location?.longitude;
+
+        if (typeof lat !== 'number' || typeof lng !== 'number') {
+          setSearchMessage('Selected place is missing coordinates.');
+          return;
+        }
+
+        if (place?.formattedAddress) {
+          setSearchQuery(place.formattedAddress);
+        } else if (place?.name) {
+          setSearchQuery(place.name);
+        }
+
+        await handlePlacePanels({ lat, lng });
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          return;
+        }
+        setSearchMessage(err instanceof Error ? err.message : 'Failed to resolve place');
+      } finally {
+        setSearchLoading(false);
+        setPlacesSessionToken(generateSessionToken());
+      }
+    },
+    [handlePlacePanels, placesSessionToken]
+  );
+
+  const handleSearchKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Enter' && searchSuggestions.length > 0) {
+        event.preventDefault();
+        handleSuggestionSelect(searchSuggestions[0]);
+      }
+    },
+    [handleSuggestionSelect, searchSuggestions]
+  );
 
   return (
     <div
@@ -302,278 +507,179 @@ export default function MapTiles3D({
         position: 'relative',
         width,
         height,
-        overflow: 'hidden',
+        backgroundColor: '#000',
       }}
     >
       <DeckGL
-        initialViewState={INITIAL_VIEW_STATE}
-        controller={{
-          dragRotate: true,
-          touchRotate: true,
-          keyboard: true,
-        }}
+        controller={{ dragRotate: true, touchRotate: true, keyboard: true }}
+        initialViewState={initialViewState}
         viewState={viewState}
         onViewStateChange={({ viewState: next }) => {
-          const nextViewState = next as MapViewState;
+          const state = next as MapViewState;
           setViewState((prev) => ({
-            latitude: nextViewState.latitude ?? prev.latitude,
-            longitude: nextViewState.longitude ?? prev.longitude,
-            zoom: nextViewState.zoom ?? prev.zoom,
-            pitch: nextViewState.pitch ?? prev.pitch,
-            bearing: nextViewState.bearing ?? prev.bearing,
+            latitude: state.latitude ?? prev.latitude,
+            longitude: state.longitude ?? prev.longitude,
+            zoom: state.zoom ?? prev.zoom,
+            pitch: state.pitch ?? prev.pitch,
+            bearing: state.bearing ?? prev.bearing,
           }));
         }}
         layers={deckLayers}
-        style={{
-          position: 'absolute',
-          inset: '0',
-        }}
+        style={{ position: 'absolute', inset: '0' }}
       />
 
       <div
         style={{
           position: 'absolute',
-          top: '20px',
-          left: '20px',
-          zIndex: 20,
+          top: 16,
+          left: 16,
+          padding: '12px 16px',
+          borderRadius: 8,
+          background: 'rgba(24, 24, 24, 0.85)',
+          color: '#fff',
+          minWidth: 260,
           display: 'flex',
           flexDirection: 'column',
-          gap: '8px',
+          gap: 12,
         }}
       >
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <input
-            type="text"
-            value={searchAddress}
-            onChange={(e) => setSearchAddress(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                handleSearchAddress();
-              }
-            }}
-            placeholder="Search address…"
-            style={{
-              padding: '12px 16px',
-              fontSize: '14px',
-              border: '1px solid #ddd',
-              borderRadius: '6px',
-              width: '300px',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-            }}
-          />
-          <button
-            onClick={handleSearchAddress}
-            disabled={isSearching || !searchAddress.trim()}
-            style={{
-              padding: '12px 20px',
-              backgroundColor: isSearching || !searchAddress.trim() ? '#9ca3af' : '#2563eb',
-              color: 'white',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: isSearching || !searchAddress.trim() ? 'not-allowed' : 'pointer',
-              fontSize: '14px',
-              fontWeight: 500,
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-            }}
-          >
-            {isSearching ? 'Searching…' : 'Search'}
-          </button>
-        </div>
-
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <input
-            type="text"
-            value={latInput}
-            onChange={(e) => setLatInput(e.target.value)}
-            placeholder="Latitude"
-            style={{
-              padding: '12px 16px',
-              fontSize: '14px',
-              border: '1px solid #ddd',
-              borderRadius: '6px',
-              width: '140px',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-            }}
-          />
-          <input
-            type="text"
-            value={lngInput}
-            onChange={(e) => setLngInput(e.target.value)}
-            placeholder="Longitude"
-            style={{
-              padding: '12px 16px',
-              fontSize: '14px',
-              border: '1px solid #ddd',
-              borderRadius: '6px',
-              width: '140px',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-            }}
-          />
-          <button
-            onClick={handleSearchLatLng}
-            style={{
-              padding: '12px 20px',
-              backgroundColor: '#0ea5e9',
-              color: 'white',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontWeight: 500,
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-            }}
-          >
-            Use Lat/Lng
-          </button>
-        </div>
-      </div>
-
-      {!showPanelConfig && (
-        <button
-          onClick={() => setShowPanelConfig(true)}
-          style={{
-            position: 'absolute',
-            top: '20px',
-            right: '20px',
-            zIndex: 20,
-            padding: '12px 20px',
-            backgroundColor: '#2563eb',
-            color: 'white',
-            border: 'none',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: 500,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-          }}
-        >
-          Configure Solar Panels
-        </button>
-      )}
-
-      {showPanelConfig && (
         <div
           style={{
-            position: 'absolute',
-            top: '20px',
-            right: '20px',
-            zIndex: 20,
-            backgroundColor: 'rgba(255, 255, 255, 0.96)',
-            borderRadius: '10px',
-            padding: '20px',
-            boxShadow: '0 10px 30px rgba(15, 23, 42, 0.25)',
-            minWidth: '320px',
-            maxWidth: '360px',
+            position: 'relative',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            paddingBottom: searchSuggestions.length > 0 ? 160 : 0,
           }}
         >
-          <h3
+          <label style={{ fontSize: 11, letterSpacing: 0.6, textTransform: 'uppercase', opacity: 0.8 }}>
+            Search Address
+          </label>
+          <input
+            value={searchQuery}
+            onChange={handleSearchInputChange}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Start typing an address…"
             style={{
-              margin: '0 0 16px 0',
-              fontSize: '18px',
-              fontWeight: 600,
-              color: '#111827',
+              padding: '8px 10px',
+              borderRadius: 6,
+              border: '1px solid rgba(255, 255, 255, 0.18)',
+              background: 'rgba(0, 0, 0, 0.35)',
+              color: '#fff',
+              fontSize: 14,
+              outline: 'none',
             }}
-          >
-            Solar Panel Configuration
-          </h3>
-
-          <div style={{ marginBottom: '16px' }}>
-            <label
+          />
+          {searchLoading && (
+            <div style={{ fontSize: 11, opacity: 0.7 }}>Searching…</div>
+          )}
+          {searchSuggestions.length > 0 && (
+            <div
               style={{
-                display: 'block',
-                marginBottom: '8px',
-                fontSize: '14px',
-                fontWeight: 500,
-                color: '#1f2937',
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                marginTop: 4,
+                background: 'rgba(18, 18, 18, 0.96)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+                borderRadius: 8,
+                boxShadow: '0 8px 18px rgba(0, 0, 0, 0.45)',
+                maxHeight: 220,
+                overflowY: 'auto',
+                zIndex: 20,
               }}
             >
-              Number of Panels: {numPanels}
+              {searchSuggestions.map((suggestion, index) => (
+                <button
+                  key={suggestion.placeId}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSuggestionSelect(suggestion)}
+                  style={{
+                    display: 'block',
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    background: 'transparent',
+                    border: 'none',
+                    borderTop: index === 0 ? 'none' : '1px solid rgba(255, 255, 255, 0.08)',
+                    color: '#fff',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{suggestion.primaryText}</div>
+                  {suggestion.secondaryText ? (
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>{suggestion.secondaryText}</div>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {searchMessage && (
+          <div style={{ fontSize: 12, color: '#ffb74d' }}>{searchMessage}</div>
+        )}
+
+        <div>
+          <strong>Current Location</strong>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>
+            {targetLocation.lat.toFixed(6)}, {targetLocation.lng.toFixed(6)}
+          </div>
+        </div>
+
+        {effectiveMaxPanels > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontSize: 11, letterSpacing: 0.6, textTransform: 'uppercase', opacity: 0.8 }}>
+              Panels to Display
             </label>
             <input
               type="range"
-              min="1"
-              max="120"
-              value={numPanels}
-              onChange={(e) => setNumPanels(parseInt(e.target.value, 10))}
-              style={{ width: '100%' }}
+              min={0}
+              max={effectiveMaxPanels}
+              value={panelLimit}
+              onChange={(event) => setPanelLimit(Number(event.target.value))}
             />
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#6b7280' }}>
-              <span>1</span>
-              <span>120</span>
+            <div style={{ fontSize: 12, opacity: 0.8 }}>
+              Showing {visiblePanels.length} of {effectiveMaxPanels}
             </div>
           </div>
+        ) : null}
 
-          <div style={{ marginBottom: '12px', fontSize: '13px', color: '#4b5563' }}>
-            <p style={{ margin: 0, color: '#059669' }}>✓ Panels align with the current map center</p>
-            <p style={{ margin: '4px 0 0 0' }}>Currently displaying: {panels.length} panels</p>
-          </div>
+        <button
+          type="button"
+          onClick={() => handlePlacePanels()}
+          disabled={isLoading}
+          style={{
+            background: '#1e88e5',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 6,
+            padding: '8px 12px',
+            cursor: isLoading ? 'progress' : 'pointer',
+            fontWeight: 600,
+          }}
+        >
+          {isLoading ? 'Loading Solar Layout…' : 'Generate Solar Panels'}
+        </button>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <button
-              onClick={handlePlacePanels}
-              style={{
-                padding: '12px 20px',
-                backgroundColor: '#22c55e',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontWeight: 500,
-                transition: 'background-color 0.2s ease-in-out',
-              }}
-            >
-              Place Solar Panels
-            </button>
-            <button
-              onClick={handleClearPanels}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: '#ef4444',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '13px',
-              }}
-            >
-              Clear Panels
-            </button>
-            <button
-              onClick={() => setShowPanelConfig(false)}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: 'transparent',
-                color: '#4b5563',
-                border: '1px solid #d1d5db',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '13px',
-              }}
-            >
-              Close
-            </button>
+        {error ? (
+          <div style={{ color: '#ff8a65', fontSize: 13 }}>{error}</div>
+        ) : building ? (
+          <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+            <div>
+              <strong>Building:</strong> {building.name ?? 'Unknown'}
+            </div>
+            <div>
+              <strong>Total Panels:</strong> {panelInstances.length}
+            </div>
+            <div>
+              <strong>Displayed:</strong> {visiblePanels.length}
+            </div>
           </div>
-
-          <div
-            style={{
-              marginTop: '16px',
-              padding: '12px',
-              backgroundColor: '#f3f4f6',
-              borderRadius: '6px',
-              fontSize: '12px',
-              color: '#6b7280',
-            }}
-          >
-            <strong>Tips:</strong>
-            <ul style={{ margin: '8px 0 0 16px', padding: 0 }}>
-              <li>Search an address or enter precise coordinates</li>
-              <li>Use the mouse or trackpad to tilt, rotate, and zoom the 3D tiles</li>
-              <li>Panels render with Deck.gl SimpleMeshLayer over Google Photorealistic 3D Tiles</li>
-            </ul>
-          </div>
-        </div>
-      )}
+        ) : null}
+      </div>
     </div>
   );
 }
