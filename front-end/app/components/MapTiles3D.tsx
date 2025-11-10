@@ -5,12 +5,10 @@ import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { Layer, LayersList, MapViewState } from '@deck.gl/core';
 import DeckGL from '@deck.gl/react';
 import { Tile3DLayer } from '@deck.gl/geo-layers';
-import { SimpleMeshLayer } from '@deck.gl/mesh-layers';
+import { ScenegraphLayer } from '@deck.gl/mesh-layers';
 import { registerLoaders } from '@loaders.gl/core';
 import { GLTFLoader } from '@loaders.gl/gltf';
 import { DracoLoader } from '@loaders.gl/draco';
-import { CubeGeometry } from '@luma.gl/engine';
-import { Matrix4 } from '@math.gl/core';
 import type { Tileset3D } from '@loaders.gl/tiles';
 
 registerLoaders([GLTFLoader, DracoLoader]);
@@ -82,8 +80,10 @@ type BuildingInsights = {
 
 type PanelInstance = {
   position: [number, number, number];
-  transform: number[];
-  color: [number, number, number, number];
+  pitchDeg: number;
+  azimuthDeg: number;
+  dimensionsMeters: [number, number];
+  energy?: number;
 };
 
 const DEFAULT_LOCATION = {
@@ -91,7 +91,6 @@ const DEFAULT_LOCATION = {
   lng: -123.36975699999999,
 };
 
-const PANEL_THICKNESS_METERS = 0.08;
 const AUTOCOMPLETE_DEBOUNCE_MS = 250;
 
 function generateSessionToken(): string {
@@ -126,58 +125,44 @@ function createPanelInstancesFromBuilding(data: BuildingInsights | undefined): P
   const panelHeight = data.solarPotential.panelHeightMeters ?? 1.8;
   const panelWidth = data.solarPotential.panelWidthMeters ?? 1.1;
 
-  return data.solarPotential.solarPanels
-    .map((panel) => {
-      const lat = panel.center?.latitude;
-      const lng = panel.center?.longitude;
-      if (typeof lat !== 'number' || typeof lng !== 'number') {
-        return undefined;
-      }
+  const instances: PanelInstance[] = [];
 
-      let segment: RoofSegmentStat | undefined;
-      if (
-        typeof panel.segmentIndex === 'number' &&
-        panel.segmentIndex >= 0 &&
-        panel.segmentIndex < roofStats.length
-      ) {
-        segment = roofStats[panel.segmentIndex];
-      }
-      if (!segment && typeof panel.segmentIndex === 'number') {
-        segment = roofStats.find((_, idx) => idx === panel.segmentIndex);
-      }
+  for (const panel of data.solarPotential.solarPanels) {
+    const lat = panel.center?.latitude;
+    const lng = panel.center?.longitude;
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      continue;
+    }
 
-      const pitchDeg = segment?.pitchDegrees ?? 0;
-      const azimuthDeg = segment?.azimuthDegrees ?? 0;
-      const baseHeight = segment?.planeHeightAtCenterMeters ?? 0;
-      const height = baseHeight - 16;
+    let segment: RoofSegmentStat | undefined;
+    if (
+      typeof panel.segmentIndex === 'number' &&
+      panel.segmentIndex >= 0 &&
+      panel.segmentIndex < roofStats.length
+    ) {
+      segment = roofStats[panel.segmentIndex];
+    }
+    if (!segment && typeof panel.segmentIndex === 'number') {
+      segment = roofStats.find((_, idx) => idx === panel.segmentIndex);
+    }
 
-      const [length, width] = orientationDimensions(panel.orientation, panelHeight, panelWidth);
+    const pitchDeg = segment?.pitchDegrees ?? 0;
+    const azimuthDeg = segment?.azimuthDegrees ?? 0;
+    const baseHeight = segment?.planeHeightAtCenterMeters ?? 0;
+    const height = baseHeight - 16;
 
-      const pitchRad = (pitchDeg * Math.PI) / 180;
-      const azimuthRad = (azimuthDeg * Math.PI) / 180;
+    const [length, width] = orientationDimensions(panel.orientation, panelHeight, panelWidth);
 
-      const matrix = new Matrix4()
-        .identity()
-        .scale([length, width, PANEL_THICKNESS_METERS])
-        .rotateZ(Math.PI - azimuthRad)
-        .rotateX(-pitchRad);
+    instances.push({
+      position: [lng, lat, height],
+      pitchDeg,
+      azimuthDeg,
+      dimensionsMeters: [length, width],
+      energy: panel.yearlyEnergyDcKwh ?? undefined,
+    });
+  }
 
-      const energy = panel.yearlyEnergyDcKwh ?? 0;
-      const energyScale = Math.min(1, energy / 6000);
-      const color: [number, number, number, number] = [
-        Math.round(255 * energyScale),
-        64,
-        Math.round(255 * (1 - energyScale)),
-        220,
-      ];
-
-      return {
-        position: [lng, lat, height],
-        transform: matrix.toArray(),
-        color,
-      } satisfies PanelInstance;
-    })
-    .filter((panel): panel is PanelInstance => Boolean(panel));
+  return instances;
 }
 
 export default function MapTiles3D({
@@ -314,22 +299,25 @@ export default function MapTiles3D({
     return panelInstances.slice(0, panelLimit);
   }, [panelInstances, panelLimit]);
 
-  const cubeGeometry = useMemo(() => new CubeGeometry(), []);
-
   const panelLayer = useMemo<Layer | null>(() => {
     if (visiblePanels.length === 0) {
       return null;
     }
 
-    return new SimpleMeshLayer<PanelInstance>({
+    return new ScenegraphLayer<PanelInstance>({
       id: 'solar-panels',
       data: visiblePanels,
-      mesh: cubeGeometry,
+      scenegraph: '/models/solar_panel.glb',
       getPosition: (d: PanelInstance) => d.position,
-      getTransformMatrix: (d: PanelInstance) => d.transform,
-      getColor: (d: PanelInstance) => d.color,
+      getOrientation: (d: PanelInstance) => [-(d.pitchDeg ?? 0), 0, 180 - (d.azimuthDeg ?? 0)],
+      getScale: (d: PanelInstance) => [d.dimensionsMeters[0], d.dimensionsMeters[1], 1],
+      sizeScale: 1,
+      pickable: false,
+      parameters: {
+        depthTest: true,
+      },
     }) as unknown as Layer;
-  }, [cubeGeometry, visiblePanels]);
+  }, [visiblePanels]);
 
   const tileLayer = useMemo<Layer>(() => {
     return new Tile3DLayer({

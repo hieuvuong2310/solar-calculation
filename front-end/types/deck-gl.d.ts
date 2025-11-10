@@ -16,6 +16,9 @@ declare module '@deck.gl/mesh-layers' {
   export class SimpleMeshLayer<DataT = any> {
     constructor(props?: any);
   }
+  export class ScenegraphLayer<DataT = any> {
+    constructor(props?: any);
+  }
 }
 
 declare module '@loaders.gl/core' {
