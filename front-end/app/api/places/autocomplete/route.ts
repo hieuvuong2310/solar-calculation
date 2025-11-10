@@ -118,8 +118,8 @@ export async function GET(req: NextRequest) {
             secondaryText: secondary,
           };
         })
-        .filter((suggestion): suggestion is { placeId: string; primaryText: string; secondaryText?: string } =>
-          Boolean(suggestion && suggestion.primaryText)
+        .filter((suggestion): suggestion is { placeId: string; primaryText: string; secondaryText: string } =>
+          Boolean(suggestion && suggestion.primaryText && typeof suggestion.secondaryText === "string")
         ) ?? [];
 
     return NextResponse.json({ suggestions });

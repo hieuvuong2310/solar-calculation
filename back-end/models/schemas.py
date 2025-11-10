@@ -62,3 +62,30 @@ class USDConvertedElectricityRatePlan(BaseModel):
 class EnergyUsage(BaseModel):
     energy_kWh: float
     source_url: str = None
+
+class ProxyLocation(BaseModel):
+    proxy_location_name: str
+    proxy_latitude: float
+    proxy_longitude: float
+    reasoning: str
+    
+class SolarPanelConfig(BaseModel):
+    panelsCount: Optional[int] = None
+    yearlyEnergyDcKwh: Optional[float] = None
+
+class SolarPotential(BaseModel):
+    maxArrayPanelsCount: Optional[int] = None
+    maxSunshineHoursPerYear: Optional[float] = None
+    panelCapacityWatts: Optional[int] = None
+    solarPanelConfigs: Optional[List[SolarPanelConfig]] = None
+
+class FinalAnalysis(BaseModel):
+    typical_energy_monthly_used_kWh: float
+    monthly_bill_before_solar_usd: float
+    monthly_bill_after_solar_usd: float
+    monthly_savings_usd: float
+    percentage_savings: float
+    
+    proxy_location: Optional[ProxyLocation] = None
+    electricity_rate_plan: Optional[USDConvertedElectricityRatePlan] = None
+    
