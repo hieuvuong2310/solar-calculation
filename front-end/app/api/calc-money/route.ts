@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+import { promises as fs } from 'node:fs';
 import { NextRequest, NextResponse } from 'next/server';
 
 const DEFAULT_BACKEND_URL = 'http://localhost:3001/';
@@ -53,26 +55,42 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }),
     });
 
-    if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || payload?.success === false) {
+      const fallback = await loadSampleResponse();
       return NextResponse.json(
         {
           success: false,
-          error: `Backend responded with status ${response.status}`,
+          error:
+            payload?.error ??
+            (response.ok ? 'Calculation request failed' : `Backend responded with status ${response.status}`),
+          fallback,
         },
-        { status: 502 }
+        { status: response.ok ? 502 : response.status }
       );
     }
 
-    const payload = await response.json().catch(() => null);
     return NextResponse.json({ success: true, data: payload });
   } catch (error) {
+    const fallback = await loadSampleResponse();
     return NextResponse.json(
       {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown backend error',
+        fallback,
       },
       { status: 500 }
     );
   }
 }
 
+async function loadSampleResponse(): Promise<unknown> {
+  try {
+    const filePath = join(process.cwd(), 'mock', 'sample_response.json');
+    const contents = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(contents);
+  } catch {
+    return null;
+  }
+}

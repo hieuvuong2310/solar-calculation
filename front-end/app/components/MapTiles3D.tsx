@@ -86,61 +86,9 @@ type PanelInstance = {
   energy?: number;
 };
 
-type UtilityPlanTier = {
-  start_kWh?: number;
-  end_kWh?: number;
-  price_per_kWh?: number;
-  price_per_kWh_usd?: number | null;
-};
-
-type UtilityPlan = {
-  plan_type?: string;
-  plan_name?: string;
-  utility_name?: string;
-  currency_code?: string;
-  unit?: string;
-  price_per_kWh_usd?: number | null;
-  tiers?: UtilityPlanTier[] | null;
-  tou_periods?: unknown;
-  demand_charges?: unknown;
-  fixed_monthly_fee_usd?: number | null;
-  additional_fees?: unknown;
-  effective_date?: string;
-  source_url?: string;
-  notes?: string;
-};
-
 type CalcMoneyPayload = {
-  message?: string;
-  plan: UtilityPlan | null;
-  raw?: unknown;
+  summary: string;
 };
-
-type InfoRowProps = {
-  label: string;
-  value?: string | number | null;
-};
-
-function InfoRow({ label, value }: InfoRowProps) {
-  const displayValue =
-    value === null || value === undefined || (typeof value === 'string' && value.trim() === '')
-      ? '—'
-      : String(value);
-  return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        gap: 12,
-        fontSize: 13,
-      }}
-    >
-      <span style={{ opacity: 0.7, textTransform: 'uppercase', letterSpacing: 0.6, fontSize: 11 }}>{label}</span>
-      <span style={{ fontWeight: 600, textAlign: 'right', flex: '0 0 auto' }}>{displayValue}</span>
-    </div>
-  );
-}
 
 const DEFAULT_LOCATION = {
   lat: 48.5164865,
@@ -245,10 +193,8 @@ export default function MapTiles3D({
   const [viewState, setViewState] = useState<DeckState>(initialViewState);
   const [targetLocation, setTargetLocation] = useState(defaultLocation);
   const [panelInstances, setPanelInstances] = useState<PanelInstance[]>([]);
-  const [panelLimit, setPanelLimit] = useState<number>(0);
+  const [panelLimit, setPanelLimit] = useState<number>(12);
   const [maxPanelCapacity, setMaxPanelCapacity] = useState<number>(0);
-  const [building, setBuilding] = useState<BuildingInsights | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchSuggestions, setSearchSuggestions] = useState<PlaceSuggestion[]>([]);
@@ -256,31 +202,35 @@ export default function MapTiles3D({
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const [placesSessionToken, setPlacesSessionToken] = useState<string>(() => generateSessionToken());
   const autocompleteAbortRef = useRef<AbortController | null>(null);
-  const [calcMoneyDialogOpen, setCalcMoneyDialogOpen] = useState(false);
+  const [suppressSuggestions, setSuppressSuggestions] = useState(false);
   const [calcMoneyLoading, setCalcMoneyLoading] = useState(false);
-  const [calcMoneyError, setCalcMoneyError] = useState<string | null>(null);
   const [calcMoneyPayload, setCalcMoneyPayload] = useState<CalcMoneyPayload | null>(null);
-  const usdFormatter = useMemo(
-    () =>
-      new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-        maximumFractionDigits: 4,
-      }),
-    []
-  );
-  const fetchCalcMoney = useCallback(
-    async (coords: { lat: number; lng: number }, addressHint?: string) => {
-    setCalcMoneyDialogOpen(true);
+  const fetchCalcMoney = useCallback(async (coords: { lat: number; lng: number }, addressHint?: string) => {
     setCalcMoneyLoading(true);
-    setCalcMoneyError(null);
     setCalcMoneyPayload(null);
 
     if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
       setCalcMoneyLoading(false);
-      setCalcMoneyError('Invalid location coordinates for quote request.');
+      setCalcMoneyPayload({ summary: 'Invalid location coordinates for quote request.' });
       return;
     }
+
+    const extractSummary = (payload: unknown): string => {
+      if (!payload) {
+        return 'Quote data unavailable.';
+      }
+      if (typeof payload === 'string') {
+        return payload;
+      }
+      if (typeof payload === 'object') {
+        const responseText = (payload as { response?: unknown }).response;
+        if (typeof responseText === 'string') {
+          return responseText;
+        }
+        return JSON.stringify(payload, null, 2);
+      }
+      return String(payload);
+    };
 
     try {
       const response = await fetch('/api/calc-money', {
@@ -292,46 +242,27 @@ export default function MapTiles3D({
         body: JSON.stringify({
           lat: coords.lat,
           lng: coords.lng,
-            address: addressHint ?? '',
+          address: addressHint ?? '',
         }),
       });
       const payload = await response.json().catch(() => null);
 
-      if (!response.ok) {
-        const message = payload?.error ?? `Request failed with status ${response.status}`;
-        throw new Error(message);
+      if (!response.ok || payload?.success === false) {
+        const summary = extractSummary(payload?.fallback ?? payload?.data ?? payload);
+        setCalcMoneyPayload({ summary });
+        return;
       }
 
-      if (payload?.success === false) {
-        const message = payload?.error ?? 'Calculation request failed';
-        throw new Error(message);
-      }
-
-      const data = payload?.data ?? {};
-      let parsedResponse: unknown = data?.response;
-      if (typeof parsedResponse === 'string') {
-        try {
-          parsedResponse = JSON.parse(parsedResponse);
-        } catch {
-          // Keep original string if JSON parsing fails
-        }
-      }
-
-      const plan =
-        parsedResponse && typeof parsedResponse === 'object' ? (parsedResponse as UtilityPlan) : null;
-
-      setCalcMoneyPayload({
-        message: typeof data?.message === 'string' ? data.message : undefined,
-        plan,
-        raw: parsedResponse,
-      });
+      const summary = extractSummary(payload?.data ?? payload);
+      setCalcMoneyPayload({ summary });
     } catch (err) {
-      setCalcMoneyError(err instanceof Error ? err.message : 'Failed to calculate financial details');
+      setCalcMoneyPayload({
+        summary: err instanceof Error ? err.message : 'Failed to calculate financial details.',
+      });
     } finally {
       setCalcMoneyLoading(false);
     }
-  },
-  []);
+  }, []);
 
 
   useEffect(() => {
@@ -353,6 +284,16 @@ export default function MapTiles3D({
       }
       setSearchSuggestions([]);
       setSearchMessage(null);
+      setSearchLoading(false);
+      return;
+    }
+
+    if (suppressSuggestions) {
+      if (autocompleteAbortRef.current) {
+        autocompleteAbortRef.current.abort();
+        autocompleteAbortRef.current = null;
+      }
+      setSearchSuggestions([]);
       setSearchLoading(false);
       return;
     }
@@ -405,7 +346,7 @@ export default function MapTiles3D({
       clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [placesSessionToken, searchQuery, targetLocation.lat, targetLocation.lng]);
+  }, [placesSessionToken, searchQuery, suppressSuggestions, targetLocation.lat, targetLocation.lng]);
 
   const effectiveMaxPanels = useMemo(() => {
     if (panelInstances.length === 0) {
@@ -485,9 +426,8 @@ export default function MapTiles3D({
   }, [panelLayer, tileLayer]);
 
   const handlePlacePanels = useCallback(
-    async (overrideLocation?: { lat: number; lng: number }) => {
+    async (overrideLocation?: { lat: number; lng: number }, addressHint?: string) => {
       const location = overrideLocation ?? targetLocation;
-      setIsLoading(true);
       setError(null);
 
       if (overrideLocation) {
@@ -510,8 +450,6 @@ export default function MapTiles3D({
         }
 
         const insight: BuildingInsights = payload;
-        setBuilding(insight);
-
         const generatedPanels = createPanelInstancesFromBuilding(insight);
         if (generatedPanels.length === 0) {
           setError('No solar panels available for this location');
@@ -534,6 +472,7 @@ export default function MapTiles3D({
         const resolvedCenter = { lat: centerLat, lng: centerLng };
 
         setTargetLocation(resolvedCenter);
+        void fetchCalcMoney(resolvedCenter, addressHint ?? searchQuery);
 
         setViewState((prev) => ({
           ...prev,
@@ -544,49 +483,24 @@ export default function MapTiles3D({
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error fetching solar layout');
       } finally {
-        setIsLoading(false);
+        // no-op
       }
     },
-    [targetLocation]
+    [fetchCalcMoney, searchQuery, targetLocation]
   );
-  const formattedCalcMoneyResponse = useMemo(() => {
-    const payload = calcMoneyPayload?.raw;
-    if (payload === undefined || payload === null) {
-      return '';
-    }
-    if (typeof payload === 'string') {
-      return payload;
-    }
-    try {
-      return JSON.stringify(payload, null, 2);
-    } catch {
-      return String(payload);
-    }
-  }, [calcMoneyPayload]);
 
-  const handleCloseCalcMoneyDialog = useCallback(() => {
-    setCalcMoneyDialogOpen(false);
-  }, []);
-
-  const handleGetQuote = useCallback(() => {
-    const trimmedAddress =
-      (searchQuery && searchQuery.trim().length > 0
-        ? searchQuery.trim()
-        : building?.name ?? `Location ${targetLocation.lat.toFixed(5)}, ${targetLocation.lng.toFixed(5)}`);
-
-    void fetchCalcMoney(
-      {
-        lat: targetLocation.lat,
-        lng: targetLocation.lng,
-      },
-      trimmedAddress
-    );
-  }, [building?.name, fetchCalcMoney, searchQuery, targetLocation.lat, targetLocation.lng]);
+  useEffect(() => {
+    (async () => {
+      await handlePlacePanels({ lat: defaultLocation.lat, lng: defaultLocation.lng }, searchQuery);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultLocation.lat, defaultLocation.lng]);
 
   const handleSearchInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setSearchQuery(value);
     setSearchMessage(null);
+    setSuppressSuggestions(false);
 
     if (!value.trim()) {
       setSearchSuggestions([]);
@@ -599,6 +513,7 @@ export default function MapTiles3D({
       setSearchQuery(suggestion.primaryText);
       setSearchSuggestions([]);
       setSearchMessage(null);
+      setSuppressSuggestions(true);
       setSearchLoading(true);
 
       try {
@@ -638,14 +553,11 @@ export default function MapTiles3D({
           latitude: lat,
           longitude: lng,
         }));
-        setBuilding(null);
         setPanelInstances([]);
-        setPanelLimit(0);
+        setPanelLimit(12);
         setMaxPanelCapacity(0);
-        setCalcMoneyPayload(null);
-        setCalcMoneyError(null);
-        setCalcMoneyDialogOpen(false);
-        setCalcMoneyLoading(false);
+
+        await handlePlacePanels(newLocation, place?.formattedAddress ?? place?.name ?? suggestion.primaryText);
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
           return;
@@ -655,7 +567,7 @@ export default function MapTiles3D({
         setSearchLoading(false);
         setPlacesSessionToken(generateSessionToken());
       }
-  }, [placesSessionToken]);
+  }, [handlePlacePanels, placesSessionToken]);
 
   const handleSearchKeyDown = useCallback(
     (event: KeyboardEvent<HTMLInputElement>) => {
@@ -703,7 +615,8 @@ export default function MapTiles3D({
           borderRadius: 8,
           background: 'rgba(24, 24, 24, 0.85)',
           color: '#fff',
-          minWidth: 260,
+          width: 380,
+          maxWidth: '90vw',
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
@@ -813,257 +726,40 @@ export default function MapTiles3D({
           </div>
         ) : null}
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <button
-            type="button"
-            onClick={() => handlePlacePanels()}
-            disabled={isLoading}
-            style={{
-              background: '#1e88e5',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              padding: '8px 12px',
-              cursor: isLoading ? 'progress' : 'pointer',
-              fontWeight: 600,
-              flex: '1 1 140px',
-            }}
-          >
-            {isLoading ? 'Loading Solar Layout…' : 'Generate Solar Panels'}
-          </button>
-          <button
-            type="button"
-            onClick={handleGetQuote}
-            disabled={calcMoneyLoading}
-            style={{
-              background: '#43a047',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              padding: '8px 12px',
-              cursor: calcMoneyLoading ? 'progress' : 'pointer',
-              fontWeight: 600,
-              flex: '1 1 120px',
-            }}
-          >
-            {calcMoneyLoading ? 'Fetching Quote…' : 'Get Quote'}
-          </button>
-        </div>
-
-        {error ? (
-          <div style={{ color: '#ff8a65', fontSize: 13 }}>{error}</div>
-        ) : building ? (
-          <div style={{ fontSize: 12, lineHeight: 1.5 }}>
-            <div>
-              <strong>Building:</strong> {building.name ?? 'Unknown'}
-            </div>
-            <div>
-              <strong>Total Panels:</strong> {panelInstances.length}
-            </div>
-            <div>
-              <strong>Displayed:</strong> {visiblePanels.length}
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-      {calcMoneyDialogOpen && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background: 'rgba(0, 0, 0, 0.55)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 40,
-            padding: 24,
-          }}
-        >
+        {(calcMoneyLoading || calcMoneyPayload) && (
           <div
             style={{
-              position: 'relative',
-              width: 'min(480px, 100%)',
-              maxHeight: '80vh',
-              background: 'rgba(24, 24, 24, 0.95)',
-              color: '#fff',
-              borderRadius: 12,
-              boxShadow: '0 18px 36px rgba(0, 0, 0, 0.45)',
-              padding: 20,
-              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              marginTop: 8,
+              background: 'rgba(255, 255, 255, 0.05)',
+              borderRadius: 8,
+              padding: 12,
+              border: '1px solid rgba(255, 255, 255, 0.12)',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Utility Cost Estimate</h3>
-              <button
-                type="button"
-                onClick={handleCloseCalcMoneyDialog}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: '#fff',
-                  fontSize: 20,
-                  cursor: 'pointer',
-                  lineHeight: 1,
-                }}
-                aria-label="Close cost estimate dialog"
-              >
-                ×
-              </button>
-            </div>
-
             {calcMoneyLoading ? (
-              <div style={{ fontSize: 14, opacity: 0.8 }}>Fetching cost information…</div>
-            ) : calcMoneyError ? (
-              <div style={{ color: '#ff8a65', fontSize: 13 }}>{calcMoneyError}</div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>Fetching cost information…</div>
             ) : (
-              <>
-                {calcMoneyPayload?.message ? (
-                  <div style={{ marginBottom: 12, fontSize: 14 }}>{calcMoneyPayload.message}</div>
-                ) : null}
-                {calcMoneyPayload?.plan ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    <div
-                      style={{
-                        display: 'grid',
-                        rowGap: 8,
-                        background: 'rgba(255, 255, 255, 0.04)',
-                        borderRadius: 8,
-                        padding: 12,
-                      }}
-                    >
-                      <InfoRow label="Utility" value={calcMoneyPayload.plan.utility_name ?? 'Unknown'} />
-                      <InfoRow label="Plan" value={calcMoneyPayload.plan.plan_name ?? 'Not provided'} />
-                      <InfoRow label="Type" value={calcMoneyPayload.plan.plan_type ?? 'Not provided'} />
-                      <InfoRow
-                        label="Billing Unit"
-                        value={`${calcMoneyPayload.plan.unit ?? 'kWh'} (${calcMoneyPayload.plan.currency_code ?? 'USD'})`}
-                      />
-                      {typeof calcMoneyPayload.plan.price_per_kWh_usd === 'number' ? (
-                        <InfoRow
-                          label="Avg. Price (USD)"
-                          value={usdFormatter.format(calcMoneyPayload.plan.price_per_kWh_usd)}
-                        />
-                      ) : null}
-                      {typeof calcMoneyPayload.plan.fixed_monthly_fee_usd === 'number' ? (
-                        <InfoRow
-                          label="Fixed Monthly Fee"
-                          value={usdFormatter.format(calcMoneyPayload.plan.fixed_monthly_fee_usd)}
-                        />
-                      ) : null}
-                      {calcMoneyPayload.plan.effective_date ? (
-                        <InfoRow label="Effective Date" value={calcMoneyPayload.plan.effective_date} />
-                      ) : null}
-                    </div>
-
-                    {Array.isArray(calcMoneyPayload.plan.tiers) && calcMoneyPayload.plan.tiers.length > 0 ? (
-                      <div>
-                        <div style={{ fontWeight: 600, marginBottom: 8 }}>Pricing Tiers</div>
-                        <div
-                          style={{
-                            display: 'grid',
-                            rowGap: 8,
-                            background: 'rgba(255, 255, 255, 0.04)',
-                            borderRadius: 8,
-                            padding: 12,
-                          }}
-                        >
-                          {calcMoneyPayload.plan.tiers.map((tier, index) => {
-                            const start = tier.start_kWh ?? 0;
-                            const end = tier.end_kWh;
-                            const range =
-                              typeof end === 'number' && end > start
-                                ? `${start.toLocaleString()} – ${end.toLocaleString()} ${calcMoneyPayload.plan?.unit ?? 'kWh'}`
-                                : `${start.toLocaleString()}+ ${calcMoneyPayload.plan?.unit ?? 'kWh'}`;
-
-                            const localCurrency = calcMoneyPayload.plan?.currency_code ?? 'VND';
-                            const localPrice =
-                              typeof tier.price_per_kWh === 'number'
-                                ? `${tier.price_per_kWh.toLocaleString(undefined, {
-                                    maximumFractionDigits: 2,
-                                  })} ${localCurrency}`
-                                : 'N/A';
-
-                            const usdPrice =
-                              typeof tier.price_per_kWh_usd === 'number'
-                                ? usdFormatter.format(tier.price_per_kWh_usd)
-                                : null;
-
-                            return (
-                              <div
-                                key={`${range}-${index}`}
-                                style={{
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: 4,
-                                  padding: '8px 10px',
-                                  borderRadius: 6,
-                                  background: 'rgba(0, 0, 0, 0.25)',
-                                }}
-                              >
-                                <div style={{ fontWeight: 600 }}>{range}</div>
-                                <div style={{ fontSize: 13, opacity: 0.85 }}>
-                                  Local rate: <strong>{localPrice}</strong>
-                                </div>
-                                {usdPrice ? (
-                                  <div style={{ fontSize: 13, opacity: 0.8 }}>≈ {usdPrice} per kWh</div>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {calcMoneyPayload.plan.notes ? (
-                      <div
-                        style={{
-                          fontSize: 12,
-                          lineHeight: 1.5,
-                          background: 'rgba(255, 255, 255, 0.04)',
-                          borderRadius: 8,
-                          padding: 12,
-                        }}
-                      >
-                        <strong>Notes:</strong> {calcMoneyPayload.plan.notes}
-                      </div>
-                    ) : null}
-
-                    {calcMoneyPayload.plan.source_url ? (
-                      <a
-                        href={calcMoneyPayload.plan.source_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ color: '#90caf9', fontSize: 13 }}
-                      >
-                        View official source
-                      </a>
-                    ) : null}
-                  </div>
-                ) : formattedCalcMoneyResponse ? (
-                  <pre
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.05)',
-                      borderRadius: 8,
-                      padding: 12,
-                      fontFamily: 'Menlo, Consolas, monospace',
-                      fontSize: 12,
-                      lineHeight: 1.45,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      margin: 0,
-                    }}
-                  >
-                    {formattedCalcMoneyResponse}
-                  </pre>
-                ) : (
-                  <div style={{ fontSize: 13, opacity: 0.75 }}>No detailed rate information returned.</div>
-                )}
-              </>
+              <div
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  borderRadius: 6,
+                  padding: 10,
+                }}
+              >
+                {calcMoneyPayload?.summary ?? 'No detailed rate information returned.'}
+              </div>
             )}
           </div>
-        </div>
-      )}
+        )}
+
+        {error ? <div style={{ color: '#ff8a65', fontSize: 13 }}>{error}</div> : null}
+      </div>
+
     </div>
   );
 }
