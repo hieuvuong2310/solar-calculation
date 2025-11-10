@@ -18,4 +18,4 @@ ENV PORT=3000
 EXPOSE 3000
 
 # Build the application
-CMD ["npm", "run", "dev", "--", "-H", "0.0.0.0", "-p", "3000"]
+CMD ["npm", "run", "build", "--", "-H", "0.0.0.0", "-p", "3000"]
