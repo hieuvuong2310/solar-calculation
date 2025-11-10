@@ -76,6 +76,7 @@ type BuildingInsights = {
     panelWidthMeters?: number;
     solarPanels?: SolarPanelEntry[];
     roofSegmentStats?: RoofSegmentStat[];
+    maxArrayPanelsCount?: number;
   };
 };
 
@@ -100,15 +101,20 @@ function generateSessionToken(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+const PANEL_SCALE = 0.65;
+
 function orientationDimensions(
   orientation: string | undefined,
   panelHeight: number,
   panelWidth: number
 ): [number, number] {
+  const scaledHeight = panelHeight * PANEL_SCALE;
+  const scaledWidth = panelWidth * PANEL_SCALE;
+
   if (orientation?.toUpperCase() === 'PORTRAIT') {
-    return [panelHeight, panelWidth];
+    return [scaledHeight, scaledWidth];
   }
-  return [panelWidth, panelHeight];
+  return [scaledWidth, scaledHeight];
 }
 
 function createPanelInstancesFromBuilding(data: BuildingInsights | undefined): PanelInstance[] {
@@ -143,7 +149,7 @@ function createPanelInstancesFromBuilding(data: BuildingInsights | undefined): P
       const pitchDeg = segment?.pitchDegrees ?? 0;
       const azimuthDeg = segment?.azimuthDegrees ?? 0;
       const baseHeight = segment?.planeHeightAtCenterMeters ?? 0;
-      const height = baseHeight - 17;
+      const height = baseHeight - 16;
 
       const [length, width] = orientationDimensions(panel.orientation, panelHeight, panelWidth);
 
@@ -197,7 +203,9 @@ export default function MapTiles3D({
 
   const [viewState, setViewState] = useState<DeckState>(initialViewState);
   const [targetLocation, setTargetLocation] = useState(defaultLocation);
-  const [panels, setPanels] = useState<PanelInstance[]>([]);
+  const [panelInstances, setPanelInstances] = useState<PanelInstance[]>([]);
+  const [panelLimit, setPanelLimit] = useState<number>(0);
+  const [maxPanelCapacity, setMaxPanelCapacity] = useState<number>(0);
   const [building, setBuilding] = useState<BuildingInsights | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -281,22 +289,47 @@ export default function MapTiles3D({
     };
   }, [placesSessionToken, searchQuery, targetLocation.lat, targetLocation.lng]);
 
+  const effectiveMaxPanels = useMemo(() => {
+    if (panelInstances.length === 0) {
+      return 0;
+    }
+    const capacity = maxPanelCapacity > 0 ? Math.min(maxPanelCapacity, panelInstances.length) : panelInstances.length;
+    return capacity;
+  }, [maxPanelCapacity, panelInstances.length]);
+
+  useEffect(() => {
+    const maxAvailable = effectiveMaxPanels;
+    if (panelLimit > maxAvailable) {
+      setPanelLimit(maxAvailable);
+    }
+  }, [effectiveMaxPanels, panelLimit]);
+
+  const visiblePanels = useMemo(() => {
+    if (panelLimit <= 0) {
+      return [];
+    }
+    if (panelLimit >= panelInstances.length) {
+      return panelInstances;
+    }
+    return panelInstances.slice(0, panelLimit);
+  }, [panelInstances, panelLimit]);
+
   const cubeGeometry = useMemo(() => new CubeGeometry(), []);
 
   const panelLayer = useMemo<Layer | null>(() => {
-    if (panels.length === 0) {
+    if (visiblePanels.length === 0) {
       return null;
     }
 
     return new SimpleMeshLayer<PanelInstance>({
       id: 'solar-panels',
-      data: panels,
+      data: visiblePanels,
       mesh: cubeGeometry,
       getPosition: (d: PanelInstance) => d.position,
       getTransformMatrix: (d: PanelInstance) => d.transform,
       getColor: (d: PanelInstance) => d.color,
     }) as unknown as Layer;
-  }, [cubeGeometry, panels]);
+  }, [cubeGeometry, visiblePanels]);
 
   const tileLayer = useMemo<Layer>(() => {
     return new Tile3DLayer({
@@ -362,7 +395,18 @@ export default function MapTiles3D({
         if (generatedPanels.length === 0) {
           setError('No solar panels available for this location');
         }
-        setPanels(generatedPanels);
+        setPanelInstances(generatedPanels);
+
+        const maxPanelsFromInsight =
+          insight.solarPotential?.maxArrayPanelsCount ?? generatedPanels.length;
+        setMaxPanelCapacity(maxPanelsFromInsight);
+
+        const availablePanels =
+          maxPanelsFromInsight > 0
+            ? Math.min(maxPanelsFromInsight, generatedPanels.length)
+            : generatedPanels.length;
+        const initialLimit = Math.min(12, availablePanels);
+        setPanelLimit(initialLimit);
 
         const centerLat = insight.center?.latitude ?? location.lat;
         const centerLng = insight.center?.longitude ?? location.lng;
@@ -585,6 +629,24 @@ export default function MapTiles3D({
           </div>
         </div>
 
+        {effectiveMaxPanels > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontSize: 11, letterSpacing: 0.6, textTransform: 'uppercase', opacity: 0.8 }}>
+              Panels to Display
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={effectiveMaxPanels}
+              value={panelLimit}
+              onChange={(event) => setPanelLimit(Number(event.target.value))}
+            />
+            <div style={{ fontSize: 12, opacity: 0.8 }}>
+              Showing {visiblePanels.length} of {effectiveMaxPanels}
+            </div>
+          </div>
+        ) : null}
+
         <button
           type="button"
           onClick={() => handlePlacePanels()}
@@ -610,7 +672,10 @@ export default function MapTiles3D({
               <strong>Building:</strong> {building.name ?? 'Unknown'}
             </div>
             <div>
-              <strong>Panels:</strong> {panels.length}
+              <strong>Total Panels:</strong> {panelInstances.length}
+            </div>
+            <div>
+              <strong>Displayed:</strong> {visiblePanels.length}
             </div>
           </div>
         ) : null}
