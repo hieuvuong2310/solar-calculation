@@ -12,10 +12,10 @@ RUN npm i
 COPY . .
 
 # Env (document port/key expectation)
-ENV PORT=8080
+ENV PORT=3000
 
 # Expose container port
-EXPOSE 8080
+EXPOSE 3000
 
 # Build the application
-CMD ["npm", "run", "dev", "--", "-H", "0.0.0.0", "-p", "8080"]
+CMD ["npm", "run", "dev", "--", "-H", "0.0.0.0", "-p", "3000"]
