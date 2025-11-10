@@ -86,6 +86,62 @@ type PanelInstance = {
   energy?: number;
 };
 
+type UtilityPlanTier = {
+  start_kWh?: number;
+  end_kWh?: number;
+  price_per_kWh?: number;
+  price_per_kWh_usd?: number | null;
+};
+
+type UtilityPlan = {
+  plan_type?: string;
+  plan_name?: string;
+  utility_name?: string;
+  currency_code?: string;
+  unit?: string;
+  price_per_kWh_usd?: number | null;
+  tiers?: UtilityPlanTier[] | null;
+  tou_periods?: unknown;
+  demand_charges?: unknown;
+  fixed_monthly_fee_usd?: number | null;
+  additional_fees?: unknown;
+  effective_date?: string;
+  source_url?: string;
+  notes?: string;
+};
+
+type CalcMoneyPayload = {
+  message?: string;
+  plan: UtilityPlan | null;
+  raw?: unknown;
+};
+
+type InfoRowProps = {
+  label: string;
+  value?: string | number | null;
+};
+
+function InfoRow({ label, value }: InfoRowProps) {
+  const displayValue =
+    value === null || value === undefined || (typeof value === 'string' && value.trim() === '')
+      ? '—'
+      : String(value);
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 12,
+        fontSize: 13,
+      }}
+    >
+      <span style={{ opacity: 0.7, textTransform: 'uppercase', letterSpacing: 0.6, fontSize: 11 }}>{label}</span>
+      <span style={{ fontWeight: 600, textAlign: 'right', flex: '0 0 auto' }}>{displayValue}</span>
+    </div>
+  );
+}
+
 const DEFAULT_LOCATION = {
   lat: 48.5164865,
   lng: -123.36975699999999,
@@ -200,6 +256,83 @@ export default function MapTiles3D({
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const [placesSessionToken, setPlacesSessionToken] = useState<string>(() => generateSessionToken());
   const autocompleteAbortRef = useRef<AbortController | null>(null);
+  const [calcMoneyDialogOpen, setCalcMoneyDialogOpen] = useState(false);
+  const [calcMoneyLoading, setCalcMoneyLoading] = useState(false);
+  const [calcMoneyError, setCalcMoneyError] = useState<string | null>(null);
+  const [calcMoneyPayload, setCalcMoneyPayload] = useState<CalcMoneyPayload | null>(null);
+  const usdFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 4,
+      }),
+    []
+  );
+  const fetchCalcMoney = useCallback(
+    async (coords: { lat: number; lng: number }, addressHint?: string) => {
+    setCalcMoneyDialogOpen(true);
+    setCalcMoneyLoading(true);
+    setCalcMoneyError(null);
+    setCalcMoneyPayload(null);
+
+    if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
+      setCalcMoneyLoading(false);
+      setCalcMoneyError('Invalid location coordinates for quote request.');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/calc-money', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify({
+          lat: coords.lat,
+          lng: coords.lng,
+            address: addressHint ?? '',
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const message = payload?.error ?? `Request failed with status ${response.status}`;
+        throw new Error(message);
+      }
+
+      if (payload?.success === false) {
+        const message = payload?.error ?? 'Calculation request failed';
+        throw new Error(message);
+      }
+
+      const data = payload?.data ?? {};
+      let parsedResponse: unknown = data?.response;
+      if (typeof parsedResponse === 'string') {
+        try {
+          parsedResponse = JSON.parse(parsedResponse);
+        } catch {
+          // Keep original string if JSON parsing fails
+        }
+      }
+
+      const plan =
+        parsedResponse && typeof parsedResponse === 'object' ? (parsedResponse as UtilityPlan) : null;
+
+      setCalcMoneyPayload({
+        message: typeof data?.message === 'string' ? data.message : undefined,
+        plan,
+        raw: parsedResponse,
+      });
+    } catch (err) {
+      setCalcMoneyError(err instanceof Error ? err.message : 'Failed to calculate financial details');
+    } finally {
+      setCalcMoneyLoading(false);
+    }
+  },
+  []);
+
 
   useEffect(() => {
     setTargetLocation(defaultLocation);
@@ -373,7 +506,7 @@ export default function MapTiles3D({
         if (!response.ok) {
           const message = payload?.error ?? 'Failed to fetch solar layout';
           setError(message);
-          return;
+          throw new Error(message);
         }
 
         const insight: BuildingInsights = payload;
@@ -398,9 +531,9 @@ export default function MapTiles3D({
 
         const centerLat = insight.center?.latitude ?? location.lat;
         const centerLng = insight.center?.longitude ?? location.lng;
-        const resolvedLocation = { lat: centerLat, lng: centerLng };
+        const resolvedCenter = { lat: centerLat, lng: centerLng };
 
-        setTargetLocation(resolvedLocation);
+        setTargetLocation(resolvedCenter);
 
         setViewState((prev) => ({
           ...prev,
@@ -416,6 +549,39 @@ export default function MapTiles3D({
     },
     [targetLocation]
   );
+  const formattedCalcMoneyResponse = useMemo(() => {
+    const payload = calcMoneyPayload?.raw;
+    if (payload === undefined || payload === null) {
+      return '';
+    }
+    if (typeof payload === 'string') {
+      return payload;
+    }
+    try {
+      return JSON.stringify(payload, null, 2);
+    } catch {
+      return String(payload);
+    }
+  }, [calcMoneyPayload]);
+
+  const handleCloseCalcMoneyDialog = useCallback(() => {
+    setCalcMoneyDialogOpen(false);
+  }, []);
+
+  const handleGetQuote = useCallback(() => {
+    const trimmedAddress =
+      (searchQuery && searchQuery.trim().length > 0
+        ? searchQuery.trim()
+        : building?.name ?? `Location ${targetLocation.lat.toFixed(5)}, ${targetLocation.lng.toFixed(5)}`);
+
+    void fetchCalcMoney(
+      {
+        lat: targetLocation.lat,
+        lng: targetLocation.lng,
+      },
+      trimmedAddress
+    );
+  }, [building?.name, fetchCalcMoney, searchQuery, targetLocation.lat, targetLocation.lng]);
 
   const handleSearchInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
@@ -465,7 +631,21 @@ export default function MapTiles3D({
           setSearchQuery(place.name);
         }
 
-        await handlePlacePanels({ lat, lng });
+        const newLocation = { lat, lng };
+        setTargetLocation(newLocation);
+        setViewState((prev) => ({
+          ...prev,
+          latitude: lat,
+          longitude: lng,
+        }));
+        setBuilding(null);
+        setPanelInstances([]);
+        setPanelLimit(0);
+        setMaxPanelCapacity(0);
+        setCalcMoneyPayload(null);
+        setCalcMoneyError(null);
+        setCalcMoneyDialogOpen(false);
+        setCalcMoneyLoading(false);
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
           return;
@@ -475,9 +655,7 @@ export default function MapTiles3D({
         setSearchLoading(false);
         setPlacesSessionToken(generateSessionToken());
       }
-    },
-    [handlePlacePanels, placesSessionToken]
-  );
+  }, [placesSessionToken]);
 
   const handleSearchKeyDown = useCallback(
     (event: KeyboardEvent<HTMLInputElement>) => {
@@ -635,22 +813,42 @@ export default function MapTiles3D({
           </div>
         ) : null}
 
-        <button
-          type="button"
-          onClick={() => handlePlacePanels()}
-          disabled={isLoading}
-          style={{
-            background: '#1e88e5',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 6,
-            padding: '8px 12px',
-            cursor: isLoading ? 'progress' : 'pointer',
-            fontWeight: 600,
-          }}
-        >
-          {isLoading ? 'Loading Solar Layout…' : 'Generate Solar Panels'}
-        </button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => handlePlacePanels()}
+            disabled={isLoading}
+            style={{
+              background: '#1e88e5',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 12px',
+              cursor: isLoading ? 'progress' : 'pointer',
+              fontWeight: 600,
+              flex: '1 1 140px',
+            }}
+          >
+            {isLoading ? 'Loading Solar Layout…' : 'Generate Solar Panels'}
+          </button>
+          <button
+            type="button"
+            onClick={handleGetQuote}
+            disabled={calcMoneyLoading}
+            style={{
+              background: '#43a047',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 12px',
+              cursor: calcMoneyLoading ? 'progress' : 'pointer',
+              fontWeight: 600,
+              flex: '1 1 120px',
+            }}
+          >
+            {calcMoneyLoading ? 'Fetching Quote…' : 'Get Quote'}
+          </button>
+        </div>
 
         {error ? (
           <div style={{ color: '#ff8a65', fontSize: 13 }}>{error}</div>
@@ -668,6 +866,204 @@ export default function MapTiles3D({
           </div>
         ) : null}
       </div>
+
+      {calcMoneyDialogOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 40,
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              position: 'relative',
+              width: 'min(480px, 100%)',
+              maxHeight: '80vh',
+              background: 'rgba(24, 24, 24, 0.95)',
+              color: '#fff',
+              borderRadius: 12,
+              boxShadow: '0 18px 36px rgba(0, 0, 0, 0.45)',
+              padding: 20,
+              overflowY: 'auto',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Utility Cost Estimate</h3>
+              <button
+                type="button"
+                onClick={handleCloseCalcMoneyDialog}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#fff',
+                  fontSize: 20,
+                  cursor: 'pointer',
+                  lineHeight: 1,
+                }}
+                aria-label="Close cost estimate dialog"
+              >
+                ×
+              </button>
+            </div>
+
+            {calcMoneyLoading ? (
+              <div style={{ fontSize: 14, opacity: 0.8 }}>Fetching cost information…</div>
+            ) : calcMoneyError ? (
+              <div style={{ color: '#ff8a65', fontSize: 13 }}>{calcMoneyError}</div>
+            ) : (
+              <>
+                {calcMoneyPayload?.message ? (
+                  <div style={{ marginBottom: 12, fontSize: 14 }}>{calcMoneyPayload.message}</div>
+                ) : null}
+                {calcMoneyPayload?.plan ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    <div
+                      style={{
+                        display: 'grid',
+                        rowGap: 8,
+                        background: 'rgba(255, 255, 255, 0.04)',
+                        borderRadius: 8,
+                        padding: 12,
+                      }}
+                    >
+                      <InfoRow label="Utility" value={calcMoneyPayload.plan.utility_name ?? 'Unknown'} />
+                      <InfoRow label="Plan" value={calcMoneyPayload.plan.plan_name ?? 'Not provided'} />
+                      <InfoRow label="Type" value={calcMoneyPayload.plan.plan_type ?? 'Not provided'} />
+                      <InfoRow
+                        label="Billing Unit"
+                        value={`${calcMoneyPayload.plan.unit ?? 'kWh'} (${calcMoneyPayload.plan.currency_code ?? 'USD'})`}
+                      />
+                      {typeof calcMoneyPayload.plan.price_per_kWh_usd === 'number' ? (
+                        <InfoRow
+                          label="Avg. Price (USD)"
+                          value={usdFormatter.format(calcMoneyPayload.plan.price_per_kWh_usd)}
+                        />
+                      ) : null}
+                      {typeof calcMoneyPayload.plan.fixed_monthly_fee_usd === 'number' ? (
+                        <InfoRow
+                          label="Fixed Monthly Fee"
+                          value={usdFormatter.format(calcMoneyPayload.plan.fixed_monthly_fee_usd)}
+                        />
+                      ) : null}
+                      {calcMoneyPayload.plan.effective_date ? (
+                        <InfoRow label="Effective Date" value={calcMoneyPayload.plan.effective_date} />
+                      ) : null}
+                    </div>
+
+                    {Array.isArray(calcMoneyPayload.plan.tiers) && calcMoneyPayload.plan.tiers.length > 0 ? (
+                      <div>
+                        <div style={{ fontWeight: 600, marginBottom: 8 }}>Pricing Tiers</div>
+                        <div
+                          style={{
+                            display: 'grid',
+                            rowGap: 8,
+                            background: 'rgba(255, 255, 255, 0.04)',
+                            borderRadius: 8,
+                            padding: 12,
+                          }}
+                        >
+                          {calcMoneyPayload.plan.tiers.map((tier, index) => {
+                            const start = tier.start_kWh ?? 0;
+                            const end = tier.end_kWh;
+                            const range =
+                              typeof end === 'number' && end > start
+                                ? `${start.toLocaleString()} – ${end.toLocaleString()} ${calcMoneyPayload.plan?.unit ?? 'kWh'}`
+                                : `${start.toLocaleString()}+ ${calcMoneyPayload.plan?.unit ?? 'kWh'}`;
+
+                            const localCurrency = calcMoneyPayload.plan?.currency_code ?? 'VND';
+                            const localPrice =
+                              typeof tier.price_per_kWh === 'number'
+                                ? `${tier.price_per_kWh.toLocaleString(undefined, {
+                                    maximumFractionDigits: 2,
+                                  })} ${localCurrency}`
+                                : 'N/A';
+
+                            const usdPrice =
+                              typeof tier.price_per_kWh_usd === 'number'
+                                ? usdFormatter.format(tier.price_per_kWh_usd)
+                                : null;
+
+                            return (
+                              <div
+                                key={`${range}-${index}`}
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 4,
+                                  padding: '8px 10px',
+                                  borderRadius: 6,
+                                  background: 'rgba(0, 0, 0, 0.25)',
+                                }}
+                              >
+                                <div style={{ fontWeight: 600 }}>{range}</div>
+                                <div style={{ fontSize: 13, opacity: 0.85 }}>
+                                  Local rate: <strong>{localPrice}</strong>
+                                </div>
+                                {usdPrice ? (
+                                  <div style={{ fontSize: 13, opacity: 0.8 }}>≈ {usdPrice} per kWh</div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {calcMoneyPayload.plan.notes ? (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          lineHeight: 1.5,
+                          background: 'rgba(255, 255, 255, 0.04)',
+                          borderRadius: 8,
+                          padding: 12,
+                        }}
+                      >
+                        <strong>Notes:</strong> {calcMoneyPayload.plan.notes}
+                      </div>
+                    ) : null}
+
+                    {calcMoneyPayload.plan.source_url ? (
+                      <a
+                        href={calcMoneyPayload.plan.source_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#90caf9', fontSize: 13 }}
+                      >
+                        View official source
+                      </a>
+                    ) : null}
+                  </div>
+                ) : formattedCalcMoneyResponse ? (
+                  <pre
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      borderRadius: 8,
+                      padding: 12,
+                      fontFamily: 'Menlo, Consolas, monospace',
+                      fontSize: 12,
+                      lineHeight: 1.45,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      margin: 0,
+                    }}
+                  >
+                    {formattedCalcMoneyResponse}
+                  </pre>
+                ) : (
+                  <div style={{ fontSize: 13, opacity: 0.75 }}>No detailed rate information returned.</div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
