@@ -5,7 +5,7 @@ from google.adk.tools import google_search
 from models.schemas import USDConvertedElectricityRatePlan
 from . import prompt
 
-electricity_rate_agent = LlmAgent(
+electricity_rate_agent = Agent(
     name="electricity_rate_agent",
     description="Agent to find electricity rates at various regional levels",
     model="gemini-2.0-flash",
@@ -17,13 +17,13 @@ electricity_rate_agent = LlmAgent(
 conversion_rate_agent = Agent(
     name="conversion_rate_agent",
     description="Agent to find currency conversion rates to USD.",
-    model="gemini-2.0-flash",
+    model="gemini-2.0-flash-lite",
     instruction=prompt.CONVERSION_RATE_SEARCH_PROMPT,
     output_key="conversion_rate",
 )
 
-def convert_plan_to_usd(plan: dict, conversion_rate: float) -> dict:
-    out = json.loads(json.dumps(plan)) 
+def convert_plan_to_usd(local_electricity_rates: dict, conversion_rate: float) -> dict:
+    out = json.loads(json.dumps(local_electricity_rates))
     def mul(x):
         try:
             return None if x is None else float(x) * float(conversion_rate)
@@ -53,7 +53,6 @@ def convert_plan_to_usd(plan: dict, conversion_rate: float) -> dict:
             f["amount_usd"] = mul(f.get("amount"))
 
     return out
-
 
 usd_converted_electricity_rates_agent = Agent(
     name="usd_converted_electricity_rates_agent",
