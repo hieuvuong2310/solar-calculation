@@ -4,3 +4,4 @@ pydantic==2.12.3
 python-multipart==0.0.12
 python-dotenv==1.2.1
 google-adk==1.17.0
+requests==2.32.3

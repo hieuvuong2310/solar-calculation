@@ -15,7 +15,7 @@ regional_context_search_agent = Agent(
 currency_code_setter = Agent(
         name="currency_code_setter",
         description="Agent to set currency code.",
-        model="gemini-2.0-flash",
+        model="gemini-2.0-flash-lite",
         instruction="Extract and return only the currency code as a string from {regional_identifiers}.",
         output_key="currency_code",
 )
