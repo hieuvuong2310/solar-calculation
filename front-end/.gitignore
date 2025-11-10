@@ -43,3 +43,6 @@ next-env.d.ts
 # Cesium assets (generated from node_modules)
 
 /public/cesium/
+
+# mock
+/mock/*

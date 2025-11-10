@@ -86,6 +86,10 @@ type PanelInstance = {
   energy?: number;
 };
 
+type CalcMoneyPayload = {
+  summary: string;
+};
+
 const DEFAULT_LOCATION = {
   lat: 48.5164865,
   lng: -123.36975699999999,
@@ -189,10 +193,8 @@ export default function MapTiles3D({
   const [viewState, setViewState] = useState<DeckState>(initialViewState);
   const [targetLocation, setTargetLocation] = useState(defaultLocation);
   const [panelInstances, setPanelInstances] = useState<PanelInstance[]>([]);
-  const [panelLimit, setPanelLimit] = useState<number>(0);
+  const [panelLimit, setPanelLimit] = useState<number>(12);
   const [maxPanelCapacity, setMaxPanelCapacity] = useState<number>(0);
-  const [building, setBuilding] = useState<BuildingInsights | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchSuggestions, setSearchSuggestions] = useState<PlaceSuggestion[]>([]);
@@ -200,6 +202,68 @@ export default function MapTiles3D({
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const [placesSessionToken, setPlacesSessionToken] = useState<string>(() => generateSessionToken());
   const autocompleteAbortRef = useRef<AbortController | null>(null);
+  const [suppressSuggestions, setSuppressSuggestions] = useState(false);
+  const [calcMoneyLoading, setCalcMoneyLoading] = useState(false);
+  const [calcMoneyPayload, setCalcMoneyPayload] = useState<CalcMoneyPayload | null>(null);
+  const fetchCalcMoney = useCallback(async (coords: { lat: number; lng: number }, addressHint?: string) => {
+    setCalcMoneyLoading(true);
+    setCalcMoneyPayload(null);
+
+    if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
+      setCalcMoneyLoading(false);
+      setCalcMoneyPayload({ summary: 'Invalid location coordinates for quote request.' });
+      return;
+    }
+
+    const extractSummary = (payload: unknown): string => {
+      if (!payload) {
+        return 'Quote data unavailable.';
+      }
+      if (typeof payload === 'string') {
+        return payload;
+      }
+      if (typeof payload === 'object') {
+        const responseText = (payload as { response?: unknown }).response;
+        if (typeof responseText === 'string') {
+          return responseText;
+        }
+        return JSON.stringify(payload, null, 2);
+      }
+      return String(payload);
+    };
+
+    try {
+      const response = await fetch('/api/calc-money', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify({
+          lat: coords.lat,
+          lng: coords.lng,
+          address: addressHint ?? '',
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || payload?.success === false) {
+        const summary = extractSummary(payload?.fallback ?? payload?.data ?? payload);
+        setCalcMoneyPayload({ summary });
+        return;
+      }
+
+      const summary = extractSummary(payload?.data ?? payload);
+      setCalcMoneyPayload({ summary });
+    } catch (err) {
+      setCalcMoneyPayload({
+        summary: err instanceof Error ? err.message : 'Failed to calculate financial details.',
+      });
+    } finally {
+      setCalcMoneyLoading(false);
+    }
+  }, []);
+
 
   useEffect(() => {
     setTargetLocation(defaultLocation);
@@ -220,6 +284,16 @@ export default function MapTiles3D({
       }
       setSearchSuggestions([]);
       setSearchMessage(null);
+      setSearchLoading(false);
+      return;
+    }
+
+    if (suppressSuggestions) {
+      if (autocompleteAbortRef.current) {
+        autocompleteAbortRef.current.abort();
+        autocompleteAbortRef.current = null;
+      }
+      setSearchSuggestions([]);
       setSearchLoading(false);
       return;
     }
@@ -272,7 +346,7 @@ export default function MapTiles3D({
       clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [placesSessionToken, searchQuery, targetLocation.lat, targetLocation.lng]);
+  }, [placesSessionToken, searchQuery, suppressSuggestions, targetLocation.lat, targetLocation.lng]);
 
   const effectiveMaxPanels = useMemo(() => {
     if (panelInstances.length === 0) {
@@ -352,9 +426,8 @@ export default function MapTiles3D({
   }, [panelLayer, tileLayer]);
 
   const handlePlacePanels = useCallback(
-    async (overrideLocation?: { lat: number; lng: number }) => {
+    async (overrideLocation?: { lat: number; lng: number }, addressHint?: string) => {
       const location = overrideLocation ?? targetLocation;
-      setIsLoading(true);
       setError(null);
 
       if (overrideLocation) {
@@ -373,12 +446,10 @@ export default function MapTiles3D({
         if (!response.ok) {
           const message = payload?.error ?? 'Failed to fetch solar layout';
           setError(message);
-          return;
+          throw new Error(message);
         }
 
         const insight: BuildingInsights = payload;
-        setBuilding(insight);
-
         const generatedPanels = createPanelInstancesFromBuilding(insight);
         if (generatedPanels.length === 0) {
           setError('No solar panels available for this location');
@@ -398,9 +469,10 @@ export default function MapTiles3D({
 
         const centerLat = insight.center?.latitude ?? location.lat;
         const centerLng = insight.center?.longitude ?? location.lng;
-        const resolvedLocation = { lat: centerLat, lng: centerLng };
+        const resolvedCenter = { lat: centerLat, lng: centerLng };
 
-        setTargetLocation(resolvedLocation);
+        setTargetLocation(resolvedCenter);
+        void fetchCalcMoney(resolvedCenter, addressHint ?? searchQuery);
 
         setViewState((prev) => ({
           ...prev,
@@ -411,16 +483,24 @@ export default function MapTiles3D({
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error fetching solar layout');
       } finally {
-        setIsLoading(false);
+        // no-op
       }
     },
-    [targetLocation]
+    [fetchCalcMoney, searchQuery, targetLocation]
   );
+
+  useEffect(() => {
+    (async () => {
+      await handlePlacePanels({ lat: defaultLocation.lat, lng: defaultLocation.lng }, searchQuery);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultLocation.lat, defaultLocation.lng]);
 
   const handleSearchInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setSearchQuery(value);
     setSearchMessage(null);
+    setSuppressSuggestions(false);
 
     if (!value.trim()) {
       setSearchSuggestions([]);
@@ -433,6 +513,7 @@ export default function MapTiles3D({
       setSearchQuery(suggestion.primaryText);
       setSearchSuggestions([]);
       setSearchMessage(null);
+      setSuppressSuggestions(true);
       setSearchLoading(true);
 
       try {
@@ -465,7 +546,18 @@ export default function MapTiles3D({
           setSearchQuery(place.name);
         }
 
-        await handlePlacePanels({ lat, lng });
+        const newLocation = { lat, lng };
+        setTargetLocation(newLocation);
+        setViewState((prev) => ({
+          ...prev,
+          latitude: lat,
+          longitude: lng,
+        }));
+        setPanelInstances([]);
+        setPanelLimit(12);
+        setMaxPanelCapacity(0);
+
+        await handlePlacePanels(newLocation, place?.formattedAddress ?? place?.name ?? suggestion.primaryText);
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
           return;
@@ -475,9 +567,7 @@ export default function MapTiles3D({
         setSearchLoading(false);
         setPlacesSessionToken(generateSessionToken());
       }
-    },
-    [handlePlacePanels, placesSessionToken]
-  );
+  }, [handlePlacePanels, placesSessionToken]);
 
   const handleSearchKeyDown = useCallback(
     (event: KeyboardEvent<HTMLInputElement>) => {
@@ -525,7 +615,8 @@ export default function MapTiles3D({
           borderRadius: 8,
           background: 'rgba(24, 24, 24, 0.85)',
           color: '#fff',
-          minWidth: 260,
+          width: 380,
+          maxWidth: '90vw',
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
@@ -635,39 +726,40 @@ export default function MapTiles3D({
           </div>
         ) : null}
 
-        <button
-          type="button"
-          onClick={() => handlePlacePanels()}
-          disabled={isLoading}
-          style={{
-            background: '#1e88e5',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 6,
-            padding: '8px 12px',
-            cursor: isLoading ? 'progress' : 'pointer',
-            fontWeight: 600,
-          }}
-        >
-          {isLoading ? 'Loading Solar Layout…' : 'Generate Solar Panels'}
-        </button>
-
-        {error ? (
-          <div style={{ color: '#ff8a65', fontSize: 13 }}>{error}</div>
-        ) : building ? (
-          <div style={{ fontSize: 12, lineHeight: 1.5 }}>
-            <div>
-              <strong>Building:</strong> {building.name ?? 'Unknown'}
-            </div>
-            <div>
-              <strong>Total Panels:</strong> {panelInstances.length}
-            </div>
-            <div>
-              <strong>Displayed:</strong> {visiblePanels.length}
-            </div>
+        {(calcMoneyLoading || calcMoneyPayload) && (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              marginTop: 8,
+              background: 'rgba(255, 255, 255, 0.05)',
+              borderRadius: 8,
+              padding: 12,
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+            }}
+          >
+            {calcMoneyLoading ? (
+              <div style={{ fontSize: 12, opacity: 0.75 }}>Fetching cost information…</div>
+            ) : (
+              <div
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  borderRadius: 6,
+                  padding: 10,
+                }}
+              >
+                {calcMoneyPayload?.summary ?? 'No detailed rate information returned.'}
+              </div>
+            )}
           </div>
-        ) : null}
+        )}
+
+        {error ? <div style={{ color: '#ff8a65', fontSize: 13 }}>{error}</div> : null}
       </div>
+
     </div>
   );
 }
