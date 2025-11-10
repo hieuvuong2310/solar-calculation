@@ -15,6 +15,11 @@ from .typical_usage.agent import (
     energy_setter,
 )
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class EnergyBillingAgent(BaseAgent):
     final_agent: ParallelAgent
 
@@ -63,7 +68,7 @@ class EnergyBillingAgent(BaseAgent):
         3. Calculates the average expense.
         4. Stores the result back in the session state.
         """
-        print(f"[{self.name}] Starting financial context workflow.")
+        logger.info(f"[{self.name}] Starting financial context workflow.")
         
         async for event in self.final_agent.run_async(ctx):
             yield event
@@ -77,10 +82,10 @@ class EnergyBillingAgent(BaseAgent):
             ctx.session.state['average_monthly_expense_usd'] = round(average_monthly_expense_usd, 2)
 
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            print(f"[{self.name}] Error processing financial data: {e}")
+            logger.error(f"[{self.name}] Error processing financial data: {e}")
             ctx.session.state['error'] = "Failed to calculate average expense."
             ctx.session.state['average_monthly_expense_usd'] = 0.0
-        print(f"[{self.name}] Calculated average monthly expense: {ctx.session.state.get('average_monthly_expense_usd')}")
+        logger.info(f"[{self.name}] Calculated average monthly expense: {ctx.session.state.get('average_monthly_expense_usd')}")
        
 energy_billing_agent = EnergyBillingAgent(
     name="energy_billing_agent",

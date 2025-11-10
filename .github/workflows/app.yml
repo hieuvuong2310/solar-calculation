@@ -1,0 +1,52 @@
+# .github/workflows/app.yml
+name: Deploy Backend + Frontend to Cloud Run
+on:
+  push:
+    branches:
+      - main
+env:
+  PROJECT_ID: ${{ secrets.PROJECT_ID }}
+  RUN_REGION: us-west2
+  GOOGLE_CLOUD_PROJECT: ${{ secrets.PROJECT_ID }}
+  GOOGLE_CLOUD_LOCATION: us-central1
+  SA_KEY_JSON: ${{ secrets.SA_KEY_JSON }}
+  NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ secrets.MAP_TILES_API_KEY }}
+jobs:
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: ${{ env.SA_KEY_JSON }}
+      - name: 'Set up Cloud SDK'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Build Backend Image
+        run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA
+        working-directory: back-end
+
+      - name: Deploy Backend
+        run: |
+          gcloud run deploy backend \
+            --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/backend-image:$GITHUB_SHA \
+            --region=${{ env.RUN_REGION }} \
+            --allow-unauthenticated \
+              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }},NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}"
+
+      - name: Build Frontend Image
+        run: gcloud builds submit --tag ${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA
+        working-directory: front-end
+
+      - name: Deploy Frontend
+        run: |
+          gcloud run deploy frontend \
+            --image=${{ env.RUN_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/solar-savings/frontend-image:$GITHUB_SHA \
+            --region=${{ env.RUN_REGION }} \
+            --allow-unauthenticated \
+              --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT }},GOOGLE_CLOUD_LOCATION=${{ env.GOOGLE_CLOUD_LOCATION }},NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}"
